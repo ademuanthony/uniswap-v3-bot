@@ -323,21 +323,21 @@ export class LPExecutor
   }
 
   public async getStatus(): Promise<LPStrategyStatus> {
-    const positions = Array.from(this.positions.values());
+    const positions = Array.from(this.positions.values()).map((pos) => ({
+      tokenId: pos.tokenId,
+      inRange: pos.inRange,
+      liquidity: pos.liquidity.toString(),
+      token0Balance: pos.amount0.toString(),
+      token1Balance: pos.amount1.toString(),
+      unclaimedFees0: pos.tokensOwed0.toString(),
+      unclaimedFees1: pos.tokensOwed1.toString(),
+      lastCompounded: new Date(pos.lastCompounded).toISOString(),
+    }));
 
     return {
       name: this.strategy.name,
       isRunning: this._isRunning,
-      positions: positions.map((pos) => ({
-        tokenId: pos.tokenId,
-        inRange: pos.inRange,
-        liquidity: pos.liquidity.toString(),
-        token0Balance: pos.amount0.toString(),
-        token1Balance: pos.amount1.toString(),
-        unclaimedFees0: pos.tokensOwed0.toString(),
-        unclaimedFees1: pos.tokensOwed1.toString(),
-        lastCompounded: new Date(pos.lastCompounded).toISOString(),
-      })),
+      positions,
     };
   }
 
@@ -675,5 +675,9 @@ export class LPExecutor
 
     const tx = await swapRouter.exactInputSingle(params);
     await tx.wait();
+  }
+
+  public getName(): string {
+    return this.strategy.name;
   }
 }

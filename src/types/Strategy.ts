@@ -34,6 +34,8 @@ export interface StrategyExecutor {
   start(router: Contract, wallet: Wallet): Promise<void>;
   stop(): void;
   isRunning(): boolean;
+  getName(): string;
+  getStatus(): Promise<any>;
 }
 
 export type Strategy = BaseStrategy & {

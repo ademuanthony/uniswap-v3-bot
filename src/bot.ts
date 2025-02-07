@@ -4,6 +4,10 @@ import path from 'path';
 import { Config, Strategy } from './types/Strategy';
 import { DCAStrategy, DCAExecutor } from './strategies/DCAStrategy';
 import { GridStrategy, GridExecutor } from './strategies/GridStrategy';
+import { CLIManager } from './cli/CLIManager';
+
+const routerAddress = process.env.UNISWAP_V3_ROUTER_ADDRESS;
+const routerAbi = process.env.UNISWAP_V3_ROUTER_ABI;
 
 async function loadConfig(configPath: string = 'config.json'): Promise<Config> {
   const fullPath = path.resolve(process.cwd(), configPath);
@@ -41,42 +45,53 @@ function createExecutor(strategy: Strategy) {
 }
 
 async function main() {
-  const config = await loadConfig('config.json');
-  const providerUrl = process.env.PROVIDER_URL;
-  const provider = new JsonRpcProvider(providerUrl);
+  const cli = new CLIManager();
+  try {
+    const config = await loadConfig('config.json');
+    const providerUrl = process.env.PROVIDER_URL;
+    const provider = new JsonRpcProvider(providerUrl);
 
-  const uniswapV3RouterAddress = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
-  const uniswapV3RouterAbi = [
-    'function exactInputSingle(tuple(address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
-  ];
+    cli.log('Loading strategies...');
 
-  for (const strategy of config.strategies) {
-    try {
-      const privateKey = process.env[strategy.privateKeyEnvKey];
-      if (!privateKey) {
-        console.error(`No private key found for strategy: ${strategy.name}`);
-        continue;
+    for (const strategy of config.strategies) {
+      try {
+        const privateKey = process.env[strategy.privateKeyEnvKey];
+        if (!privateKey) {
+          cli.log(`No private key found for strategy: ${strategy.name}`);
+          continue;
+        }
+
+        const wallet = new Wallet(privateKey, provider);
+        const executor = createExecutor(strategy);
+
+        // Register strategy with CLI
+        cli.registerStrategy(executor);
+        cli.log(`Registered strategy: ${strategy.name}`);
+
+        // Set up status update interval
+        setInterval(async () => {
+          const status = await executor.getStatus();
+          cli.updateStrategyState(strategy.name, status);
+        }, 5000);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        cli.log(
+          `Failed to initialize strategy ${strategy.name}: ${errorMessage}`
+        );
       }
-
-      const wallet = new Wallet(privateKey, provider);
-      const router = new Contract(
-        uniswapV3RouterAddress,
-        uniswapV3RouterAbi,
-        wallet
-      );
-
-      const executor = createExecutor(strategy);
-      await executor.start(router, wallet);
-      console.log(`Started strategy: ${strategy.name}`);
-    } catch (error) {
-      console.error(`Failed to start strategy ${strategy.name}:`, error);
     }
-  }
 
-  console.log('Uniswap v3 Bot is running. Press Ctrl+C to exit.');
+    cli.log('Bot initialization complete. Use commands to control strategies.');
+    cli.log(
+      'Available commands: start <strategy>, stop <strategy>, status <strategy>'
+    );
+  } catch (error: unknown) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error';
+    cli.log(`Fatal error in bot execution: ${errorMessage}`);
+    process.exit(1);
+  }
 }
 
-main().catch((error) => {
-  console.error('Fatal error in bot execution:', error);
-  process.exit(1);
-});
+main();

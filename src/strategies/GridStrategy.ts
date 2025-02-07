@@ -198,4 +198,24 @@ export class GridExecutor
       wallet,
     });
   }
+
+  public getName(): string {
+    return this.strategy.name;
+  }
+
+  public async getStatus(): Promise<any> {
+    return {
+      name: this.strategy.name,
+      status: this.isRunning() ? 'Running' : 'Stopped',
+      type: 'grid',
+      positions: this.positions.map((pos) => ({
+        entryPrice: pos.entryPrice.toString(),
+        amount: pos.amount.toString(),
+        profitTarget: pos.profitTarget.toString(),
+        stopLoss: pos.stopLoss.toString(),
+        timestamp: new Date(pos.timestamp).toISOString(),
+      })),
+      lastUpdate: new Date().toISOString(),
+    };
+  }
 }

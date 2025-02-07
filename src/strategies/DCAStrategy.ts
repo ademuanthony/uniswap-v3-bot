@@ -101,4 +101,19 @@ export class DCAExecutor
 
     return { tokenIn, tokenOut, tokenInSymbol, tokenOutSymbol };
   }
+
+  public getName(): string {
+    return this.strategy.name;
+  }
+
+  public async getStatus(): Promise<any> {
+    return {
+      name: this.strategy.name,
+      status: this.isRunning() ? 'Running' : 'Stopped',
+      type: 'dca',
+      action: this.strategy.action,
+      amount: this.strategy.amount,
+      lastUpdate: new Date().toISOString(),
+    };
+  }
 }
