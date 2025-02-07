@@ -53,7 +53,10 @@ export interface LPStrategy extends BaseStrategy {
   token1Name: string;
   chainId: number;
   fee: number;
-  priceRangeWidth: number;
+  priceRange: {
+    lowerBoundPercent: number; // e.g., -10 means 10% below current price
+    upperBoundPercent: number; // e.g., 15 means 15% above current price
+  };
   amount0Desired: string;
   amount1Desired: string;
   initialTickLower?: number;

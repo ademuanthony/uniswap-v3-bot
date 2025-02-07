@@ -17,8 +17,8 @@ export class DCAExecutor
   implements StrategyExecutor
 {
   private strategy: DCAStrategy;
-  private interval?: NodeJS.Timeout;
   private _isRunning: boolean = false;
+  private interval?: NodeJS.Timeout;
 
   constructor(strategy: DCAStrategy) {
     super();
@@ -51,14 +51,6 @@ export class DCAExecutor
   }
 
   async execute(router: Contract, wallet: Wallet): Promise<void> {
-    console.log(
-      `\n[${new Date().toISOString()}] Executing DCA strategy: ${
-        this.strategy.name
-      }! Swapping ${this.strategy.amount} ${this.strategy.quote_token} for ${
-        this.strategy.base_token
-      }`
-    );
-
     const { tokenIn, tokenOut } = this.getTokenPairs();
     const tokenInDecimals = await getTokenDecimals(tokenIn, wallet);
     const amountIn = parseUnits(this.strategy.amount, tokenInDecimals);
@@ -71,15 +63,9 @@ export class DCAExecutor
     );
 
     const slippage = this.strategy.slippage ?? DEFAULT_SLIPPAGE.DCA;
-    const slippageFactor = 1 - slippage / 100;
-    const amountOutMinimum = expectedAmountOut
-      .mul(Math.floor(slippageFactor * 10000))
-      .div(10000);
-
-    console.log(
-      `Expected output: ${expectedAmountOut.toString()}\n` +
-        `Minimum output (${slippage}% slippage): ${amountOutMinimum.toString()}`
-    );
+    const amountOutMinimum =
+      (expectedAmountOut * BigInt(Math.floor((1 - slippage) * 10000))) /
+      BigInt(10000);
 
     await approveToken(tokenIn, router.target.toString(), amountIn, wallet);
 
@@ -93,16 +79,16 @@ export class DCAExecutor
   }
 
   private getTokenPairs() {
-    let tokenInSymbol: string;
-    let tokenOutSymbol: string;
-
-    if (this.strategy.action === 'buy') {
-      tokenInSymbol = this.strategy.quote_token.toUpperCase();
-      tokenOutSymbol = this.strategy.base_token.toUpperCase();
-    } else {
-      tokenInSymbol = this.strategy.base_token.toUpperCase();
-      tokenOutSymbol = this.strategy.quote_token.toUpperCase();
-    }
+    const [tokenInSymbol, tokenOutSymbol] =
+      this.strategy.action === 'buy'
+        ? [
+            this.strategy.quote_token.toUpperCase(),
+            this.strategy.base_token.toUpperCase(),
+          ]
+        : [
+            this.strategy.base_token.toUpperCase(),
+            this.strategy.quote_token.toUpperCase(),
+          ];
 
     const tokenIn = tokenAddresses[tokenInSymbol];
     const tokenOut = tokenAddresses[tokenOutSymbol];

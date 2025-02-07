@@ -41,8 +41,6 @@ interface LPStrategyStatus {
     unclaimedFees1: string;
     lastCompounded: string;
   }[];
-  totalValueLocked: string;
-  apr: number;
 }
 
 export class LPExecutor
@@ -168,7 +166,7 @@ export class LPExecutor
     // Calculate optimal amounts based on price range
     const sqrtRatioA = Math.sqrt(1.0001 ** tickLower);
     const sqrtRatioB = Math.sqrt(1.0001 ** tickUpper);
-    const currentSqrtPrice = Number(sqrtPriceX96) / 2**96;
+    const currentSqrtPrice = Number(sqrtPriceX96) / 2 ** 96;
 
     // Total value to invest (in terms of token0)
     const totalValue = parseUnits(this.strategy.amount0Desired, token0Decimals);
@@ -186,16 +184,24 @@ export class LPExecutor
       amount1Desired = totalValue * BigInt(Math.floor(currentSqrtPrice ** 2));
     } else {
       // Price is in range - need both tokens
-      const token0Portion = (sqrtRatioB - currentSqrtPrice) / (sqrtRatioB - sqrtRatioA);
-      const token1Portion = (currentSqrtPrice - sqrtRatioA) / (sqrtRatioB - sqrtRatioA);
-      
-      amount0Desired = totalValue * BigInt(Math.floor(token0Portion * 1e6)) / BigInt(1e6);
-      amount1Desired = totalValue * BigInt(Math.floor(token1Portion * currentSqrtPrice ** 2 * 1e6)) / BigInt(1e6);
+      const token0Portion =
+        (sqrtRatioB - currentSqrtPrice) / (sqrtRatioB - sqrtRatioA);
+      const token1Portion =
+        (currentSqrtPrice - sqrtRatioA) / (sqrtRatioB - sqrtRatioA);
+
+      amount0Desired =
+        (totalValue * BigInt(Math.floor(token0Portion * 1e6))) / BigInt(1e6);
+      amount1Desired =
+        (totalValue *
+          BigInt(Math.floor(token1Portion * currentSqrtPrice ** 2 * 1e6))) /
+        BigInt(1e6);
     }
 
     // Get configured slippage or use defaults
-    const swapSlippage = this.strategy.slippage?.swap ?? DEFAULT_SLIPPAGE.LP_SWAP;
-    const positionSlippage = this.strategy.slippage?.position ?? DEFAULT_SLIPPAGE.LP_POSITION;
+    const swapSlippage =
+      this.strategy.slippage?.swap ?? DEFAULT_SLIPPAGE.LP_SWAP;
+    const positionSlippage =
+      this.strategy.slippage?.position ?? DEFAULT_SLIPPAGE.LP_POSITION;
 
     // Check token balances and swap if needed
     const token0Contract = new Contract(
@@ -217,14 +223,17 @@ export class LPExecutor
 
     const [balance0, balance1] = await Promise.all([
       token0Contract.balanceOf(wallet.address),
-      token1Contract.balanceOf(wallet.address)
+      token1Contract.balanceOf(wallet.address),
     ]);
 
     // Calculate required swaps
     if (balance0 < amount0Desired) {
       const shortfall0 = amount0Desired - balance0;
       // Need to swap token1 for token0 (add configured slippage)
-      const token1ToSwap = shortfall0 * BigInt(Math.floor(currentSqrtPrice * (1 + swapSlippage) * 1e6)) / BigInt(1e6);
+      const token1ToSwap =
+        (shortfall0 *
+          BigInt(Math.floor(currentSqrtPrice * (1 + swapSlippage) * 1e6))) /
+        BigInt(1e6);
       if (balance1 >= token1ToSwap) {
         await this.swapExactInputSingle(
           this.strategy.token1,
@@ -241,7 +250,12 @@ export class LPExecutor
     if (balance1 < amount1Desired) {
       const shortfall1 = amount1Desired - balance1;
       // Need to swap token0 for token1 (add configured slippage)
-      const token0ToSwap = shortfall1 * BigInt(Math.floor(1 / (currentSqrtPrice * (1 + swapSlippage)) * 1e6)) / BigInt(1e6);
+      const token0ToSwap =
+        (shortfall1 *
+          BigInt(
+            Math.floor((1 / (currentSqrtPrice * (1 + swapSlippage))) * 1e6)
+          )) /
+        BigInt(1e6);
       if (balance0 >= token0ToSwap) {
         await this.swapExactInputSingle(
           this.strategy.token0,
@@ -258,7 +272,7 @@ export class LPExecutor
     // Verify final balances after swaps
     const [finalBalance0, finalBalance1] = await Promise.all([
       token0Contract.balanceOf(wallet.address),
-      token1Contract.balanceOf(wallet.address)
+      token1Contract.balanceOf(wallet.address),
     ]);
 
     if (finalBalance0 < amount0Desired || finalBalance1 < amount1Desired) {
@@ -266,13 +280,14 @@ export class LPExecutor
     }
 
     // Approve with a buffer based on position slippage
-    const approvalBuffer = BigInt(Math.floor((1 + positionSlippage) * 100)) / BigInt(100);
+    const approvalBuffer =
+      BigInt(Math.floor((1 + positionSlippage) * 100)) / BigInt(100);
     const amount0WithBuffer = amount0Desired * approvalBuffer;
     const amount1WithBuffer = amount1Desired * approvalBuffer;
 
     await Promise.all([
       token0Contract.approve(POSITION_MANAGER_ADDRESS, amount0WithBuffer),
-      token1Contract.approve(POSITION_MANAGER_ADDRESS, amount1WithBuffer)
+      token1Contract.approve(POSITION_MANAGER_ADDRESS, amount1WithBuffer),
     ]);
 
     const params = {
@@ -283,8 +298,12 @@ export class LPExecutor
       tickUpper,
       amount0Desired,
       amount1Desired,
-      amount0Min: amount0Desired * BigInt(Math.floor((1 - positionSlippage) * 100)) / BigInt(100),
-      amount1Min: amount1Desired * BigInt(Math.floor((1 - positionSlippage) * 100)) / BigInt(100),
+      amount0Min:
+        (amount0Desired * BigInt(Math.floor((1 - positionSlippage) * 100))) /
+        BigInt(100),
+      amount1Min:
+        (amount1Desired * BigInt(Math.floor((1 - positionSlippage) * 100))) /
+        BigInt(100),
       recipient: wallet.address,
       deadline: Math.floor(Date.now() / 1000) + 1800,
     };
@@ -305,8 +324,6 @@ export class LPExecutor
 
   public async getStatus(): Promise<LPStrategyStatus> {
     const positions = Array.from(this.positions.values());
-    const tvl = await this.calculateTotalValueLocked();
-    const apr = await this.calculateAPR();
 
     return {
       name: this.strategy.name,
@@ -321,8 +338,6 @@ export class LPExecutor
         unclaimedFees1: pos.tokensOwed1.toString(),
         lastCompounded: new Date(pos.lastCompounded).toISOString(),
       })),
-      totalValueLocked: tvl,
-      apr,
     };
   }
 
@@ -434,26 +449,9 @@ export class LPExecutor
     wallet: Wallet
   ): Promise<void> {
     const position = await this.getPosition(tokenId, positionManager, wallet);
-    const poolAddress = await this.getPoolAddress(
-      position.token0,
-      position.token1,
-      position.fee,
-      wallet
-    );
-
-    // Get pool state directly from contract
-    const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
-    const { tick: currentTick } = await poolContract.slot0();
 
     // Remove liquidity from current position
     await this.removeLiquidity(tokenId, position.liquidity, positionManager);
-
-    // Calculate new tick range centered around current price
-    const tickSpacing = this.getTickSpacing(position.fee);
-    const newTickLower =
-      Math.floor(currentTick / tickSpacing) * tickSpacing - tickSpacing * 10;
-    const newTickUpper =
-      Math.floor(currentTick / tickSpacing) * tickSpacing + tickSpacing * 10;
 
     await this.createPosition(positionManager, wallet);
   }
@@ -487,16 +485,6 @@ export class LPExecutor
       default:
         throw new Error(`Unsupported fee tier: ${fee}`);
     }
-  }
-
-  private async calculateTotalValueLocked(): Promise<string> {
-    // Implementation depends on price oracle integration
-    return '0'; // Placeholder
-  }
-
-  private async calculateAPR(): Promise<number> {
-    // Implementation depends on historical fee data
-    return 0; // Placeholder
   }
 
   private async safeExecute<T>(
@@ -547,11 +535,6 @@ export class LPExecutor
     }
 
     const factory = new Contract(FACTORY_ADDRESS, FACTORY_ABI, wallet);
-    const poolAddress = await factory.getPool(
-      token0Address,
-      token1Address,
-      fee
-    );
 
     const [token0Decimals, token1Decimals] = await Promise.all([
       getTokenDecimals(token0Address, wallet),
@@ -602,108 +585,41 @@ export class LPExecutor
     const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
     const { tick: currentTick } = await poolContract.slot0();
 
-    // Calculate price range based on strategy configuration
-    const rangeFactor = this.strategy.priceRangeWidth || 0.1;
-    const tickRange = Math.floor(Math.log(1 + rangeFactor) / Math.log(1.0001));
+    // Calculate price range based on user-configured percentages
+    const lowerBoundPercent = this.strategy.priceRange.lowerBoundPercent;
+    const upperBoundPercent = this.strategy.priceRange.upperBoundPercent;
 
-    const tickLower = nearestUsableTick(currentTick - tickRange, tickSpacing);
-    const tickUpper = nearestUsableTick(currentTick + tickRange, tickSpacing);
+    // Convert percentage to tick range
+    // For x% price change, we need to calculate log(1 + x/100) / log(1.0001)
+    const lowerTickDelta = Math.floor(
+      Math.log(1 + lowerBoundPercent / 100) / Math.log(1.0001)
+    );
+    const upperTickDelta = Math.floor(
+      Math.log(1 + upperBoundPercent / 100) / Math.log(1.0001)
+    );
+
+    // Find nearest valid ticks
+    const tickLower = nearestUsableTick(
+      currentTick + lowerTickDelta,
+      tickSpacing
+    );
+    const tickUpper = nearestUsableTick(
+      currentTick + upperTickDelta,
+      tickSpacing
+    );
+
+    console.log(
+      `Setting position range: ${lowerBoundPercent}% to ${upperBoundPercent}% from current price`
+    );
+    console.log(`Current tick: ${currentTick}`);
+    console.log(
+      `Lower tick: ${tickLower} (${lowerTickDelta} ticks from current)`
+    );
+    console.log(
+      `Upper tick: ${tickUpper} (${upperTickDelta} ticks from current)`
+    );
 
     return { tickLower, tickUpper };
-  }
-
-  private async optimizePosition(
-    position: LPPosition,
-    pool: Pool,
-    wallet: Wallet
-  ): Promise<{
-    shouldRebalance: boolean;
-    newTicks?: { lower: number; upper: number };
-  }> {
-    const currentTick = pool.tickCurrent;
-    const priceDeviation = Math.abs(
-      (currentTick - position.tickLower) /
-        (position.tickUpper - position.tickLower)
-    );
-
-    if (priceDeviation > this.strategy.rebalance.threshold) {
-      const { tickLower, tickUpper } = await this.calculateOptimalTickRange(
-        pool,
-        currentTick,
-        wallet
-      );
-      return {
-        shouldRebalance: true,
-        newTicks: { lower: tickLower, upper: tickUpper },
-      };
-    }
-
-    return { shouldRebalance: false };
-  }
-
-  private async calculateFeeAPR(
-    position: LPPosition,
-    pool: Pool
-  ): Promise<number> {
-    const positionAgeInDays =
-      Number(BigInt(Date.now() - position.timestamp)) / (24 * 60 * 60 * 1000);
-    const positionAgeInYears = positionAgeInDays / 365;
-
-    const feeValue0 = Number(
-      position.tokensOwed0 * (await this.getTokenPrice(position.token0))
-    );
-    const feeValue1 = Number(
-      position.tokensOwed1 * (await this.getTokenPrice(position.token1))
-    );
-
-    const totalFeeValue = feeValue0 + feeValue1;
-    const positionValue = Number(
-      position.amount0 * (await this.getTokenPrice(position.token0)) +
-        position.amount1 * (await this.getTokenPrice(position.token1))
-    );
-
-    return (totalFeeValue / positionValue / positionAgeInYears) * 100;
-  }
-
-  private async shouldCompoundPosition(
-    position: LPPosition,
-    fees: CollectedFees
-  ): Promise<boolean> {
-    if (!this.strategy.autoCompound.enabled) return false;
-
-    const timeSinceLastCompound = Date.now() - position.lastCompounded;
-    if (timeSinceLastCompound < this.strategy.autoCompound.interval * 1000) {
-      return false;
-    }
-
-    const minFeeValue = parseUnits(
-      this.strategy.autoCompound.minFeesForCompound,
-      18
-    );
-
-    const feeValue0 =
-      fees.amount0 * (await this.getTokenPrice(position.token0));
-    const feeValue1 =
-      fees.amount1 * (await this.getTokenPrice(position.token1));
-
-    return feeValue0 + feeValue1 >= minFeeValue;
-  }
-
-  private async getTokenPrice(tokenAddress: string): Promise<bigint> {
-    // Implement price fetching logic here
-    // You might want to use an oracle or DEX for this
-    const PRICE_FEED_ABI = [
-      'function latestAnswer() external view returns (int256)',
-      'function decimals() external view returns (uint8)',
-    ];
-
-    try {
-      // This is a placeholder - implement actual price fetching logic
-      return BigInt(1e18); // Return price in wei
-    } catch (error) {
-      console.error(`Error fetching price for ${tokenAddress}:`, error);
-      return BigInt(0);
-    }
   }
 
   private async getPoolAddress(
@@ -726,15 +642,21 @@ export class LPExecutor
   ): Promise<void> {
     const SWAP_ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
     const SWAP_ROUTER_ABI = [
-      'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)'
+      'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
     ];
 
-    const swapRouter = new Contract(SWAP_ROUTER_ADDRESS, SWAP_ROUTER_ABI, wallet);
+    const swapRouter = new Contract(
+      SWAP_ROUTER_ADDRESS,
+      SWAP_ROUTER_ABI,
+      wallet
+    );
 
     // Approve token spending
     const tokenContract = new Contract(
       tokenIn,
-      ['function approve(address spender, uint256 amount) external returns (bool)'],
+      [
+        'function approve(address spender, uint256 amount) external returns (bool)',
+      ],
       wallet
     );
     await tokenContract.approve(SWAP_ROUTER_ADDRESS, amountIn);
@@ -746,8 +668,9 @@ export class LPExecutor
       recipient: wallet.address,
       deadline: Math.floor(Date.now() / 1000) + 1800,
       amountIn,
-      amountOutMinimum: amountIn * BigInt(Math.floor((1 - slippage) * 100)) / BigInt(100), // Calculate minimum based on slippage
-      sqrtPriceLimitX96: 0
+      amountOutMinimum:
+        (amountIn * BigInt(Math.floor((1 - slippage) * 100))) / BigInt(100), // Calculate minimum based on slippage
+      sqrtPriceLimitX96: 0,
     };
 
     const tx = await swapRouter.exactInputSingle(params);
