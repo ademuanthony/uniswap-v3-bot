@@ -198,55 +198,62 @@ export class CLIManager {
   }
 
   private async handleCommand(command: string): Promise<void> {
-    const [action, strategyKey, ...args] = command.trim().split(' ');
+    const [strategyKey, action, ...args] = command.trim().split(' ');
 
-    if (!action) return;
+    if (!strategyKey) return;
+
+    if (strategyKey === 'help') {
+      this.log('Command format: <strategy> <command> [args]');
+      this.log('Available commands:');
+      this.log('  <strategy> start        - Start a strategy');
+      this.log('  <strategy> stop         - Stop a strategy');
+      this.log('  <strategy> status       - Get strategy status');
+      this.log('  <strategy> <command>    - Execute strategy-specific command');
+      this.log('  quit                    - Shutdown bot');
+      this.log('  help                    - Show this help');
+      return;
+    }
+
+    if (strategyKey === 'quit') {
+      await this.shutdown();
+      return;
+    }
 
     const strategy = this.strategies.get(strategyKey);
-    if (!strategy && action !== 'help' && action !== 'quit') {
+    if (!strategy) {
       this.log(`Strategy not found: ${strategyKey}`);
       return;
     }
 
     try {
-      switch (action.toLowerCase()) {
-        case 'help':
-          this.log('Available commands:');
-          this.log('  start <strategy>  - Start a strategy');
-          this.log('  stop <strategy>   - Stop a strategy');
-          this.log('  status <strategy> - Get strategy status');
-          this.log('  quit              - Shutdown bot');
-          this.log('  help              - Show this help');
-          break;
-
-        case 'quit':
-          await this.shutdown();
-          break;
-
+      switch (action?.toLowerCase()) {
         case 'start':
-          if (!strategy) break;
           // await strategy.start(this.router, this.wallet);
           this.log(`Started strategy: ${strategyKey}`);
           this.updateStrategyState(strategyKey, { status: 'Running' });
           break;
 
         case 'stop':
-          if (!strategy) break;
           strategy.stop();
           this.log(`Stopped strategy: ${strategyKey}`);
           this.updateStrategyState(strategyKey, { status: 'Stopped' });
           break;
 
         case 'status':
-          if (!strategy) break;
           const status = await strategy.getStatus();
           this.log(`Status for ${strategyKey}:`);
           this.log(JSON.stringify(status, null, 2));
           break;
 
         default:
-          this.log(`Unknown command: ${action}`);
-          this.log('Type "help" for available commands');
+          // Forward unknown commands to strategy
+          if (action) {
+            const response = await strategy.handleCommand(action, args);
+            this.log(response);
+          } else {
+            this.log('No command specified');
+            this.log('Type "help" for available commands');
+          }
       }
     } catch (error: unknown) {
       const errorMessage =

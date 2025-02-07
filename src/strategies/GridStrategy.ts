@@ -231,4 +231,8 @@ export class GridExecutor
       `Profit Targets: ${this.strategy.profitTaking.targets.join(', ')}%`,
     ];
   }
+
+  public async handleCommand(action: string, args: string[]): Promise<string> {
+    return `Unknown command: ${action}. No custom commands available for Grid strategy`;
+  }
 }

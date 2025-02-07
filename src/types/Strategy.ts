@@ -39,6 +39,7 @@ export interface StrategyExecutor {
   getKey(): string;
   getStatus(): Promise<any>;
   getDisplayInfo(): string[];
+  handleCommand(action: string, args: string[]): Promise<string>; // Returns response message
 }
 
 export type Strategy = BaseStrategy & {

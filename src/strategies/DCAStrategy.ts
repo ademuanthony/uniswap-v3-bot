@@ -129,4 +129,8 @@ export class DCAExecutor
       `Last Run: ${new Date().toISOString()}`,
     ];
   }
+
+  public async handleCommand(action: string, args: string[]): Promise<string> {
+    return `Unknown command: ${action}. No custom commands available for DCA strategy`;
+  }
 }

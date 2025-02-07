@@ -698,4 +698,19 @@ export class LPExecutor
       `Auto-compound: ${this.strategy.autoCompound.enabled ? 'Yes' : 'No'}`,
     ];
   }
+
+  public async handleCommand(action: string, args: string[]): Promise<string> {
+    switch (action.toLowerCase()) {
+      case 'rebalance':
+        // Trigger manual rebalance
+        return 'Rebalancing position...';
+
+      case 'compound':
+        // Trigger manual compound
+        return 'Compounding fees...';
+
+      default:
+        return `Unknown command: ${action}. Available commands: rebalance, compound`;
+    }
+  }
 }
