@@ -1,0 +1,14 @@
+{
+  "strategies": [
+    {
+      "name": "BTC DCA Accumulation",
+      "base_token": "WBTC",
+      "quote_token": "USDC",
+      "action": "buy",
+      "amount": "0.001",
+      "slippage": 0.1,
+      "interval": 60
+    }
+  ]
+}
+
