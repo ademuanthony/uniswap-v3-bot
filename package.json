@@ -13,7 +13,9 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "ethers": "^6.13.5"
+    "@uniswap/v3-sdk": "^3.24.0",
+    "ethers": "^6.13.5",
+    "jsbi": "^4.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",

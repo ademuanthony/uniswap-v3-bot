@@ -228,7 +228,7 @@ export class GridExecutor
 
     const slippage = this.strategy.slippage ?? DEFAULT_SLIPPAGE.GRID_ENTRY;
     const amountOutMinimum = expectedAmountOut
-      .mul(BigInt(Math.floor((100 - slippage) * 100)))
+      .mul(BigInt(Math.floor((100 - (slippage as number)) * 100)))
       .div(10000);
 
     // Setup remaining entries
@@ -295,7 +295,7 @@ export class GridExecutor
         ? this.strategy.slippage ?? DEFAULT_SLIPPAGE.GRID_PROFIT
         : this.strategy.slippage ?? DEFAULT_SLIPPAGE.GRID_LOSS;
 
-    await this.executeSell(amount, slippage, router, wallet);
+    await this.executeSell(amount, slippage as number, router, wallet);
     position.remainingAmount -= amount;
 
     // Remove position if fully closed
