@@ -3,6 +3,7 @@ import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
 import { getTokenDecimals, approveToken } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
+import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 
 export interface DCAStrategy extends BaseStrategy {
   type: 'dca';
@@ -16,10 +17,37 @@ export class DCAExecutor
   implements StrategyExecutor
 {
   private strategy: DCAStrategy;
+  private interval?: NodeJS.Timeout;
+  private _isRunning: boolean = false;
 
   constructor(strategy: DCAStrategy) {
     super();
     this.strategy = strategy;
+  }
+
+  async start(router: Contract, wallet: Wallet): Promise<void> {
+    if (this._isRunning) return;
+
+    this._isRunning = true;
+    this.interval = setInterval(async () => {
+      try {
+        await this.execute(router, wallet);
+      } catch (error) {
+        console.error(`Error in DCA strategy ${this.strategy.name}:`, error);
+      }
+    }, this.strategy.interval * 1000);
+  }
+
+  stop(): void {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = undefined;
+    }
+    this._isRunning = false;
+  }
+
+  isRunning(): boolean {
+    return this._isRunning;
   }
 
   async execute(router: Contract, wallet: Wallet): Promise<void> {
@@ -42,17 +70,15 @@ export class DCAExecutor
       wallet
     );
 
-    // Calculate minimum output amount based on slippage
-    const slippageFactor = 1 - this.strategy.slippage / 100;
+    const slippage = this.strategy.slippage ?? DEFAULT_SLIPPAGE.DCA;
+    const slippageFactor = 1 - slippage / 100;
     const amountOutMinimum = expectedAmountOut
       .mul(Math.floor(slippageFactor * 10000))
       .div(10000);
 
     console.log(
       `Expected output: ${expectedAmountOut.toString()}\n` +
-        `Minimum output (${
-          this.strategy.slippage
-        }% slippage): ${amountOutMinimum.toString()}`
+        `Minimum output (${slippage}% slippage): ${amountOutMinimum.toString()}`
     );
 
     await approveToken(tokenIn, router.target.toString(), amountIn, wallet);

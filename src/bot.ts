@@ -13,10 +13,28 @@ async function loadConfig(configPath: string = 'config.json'): Promise<Config> {
 
 function createExecutor(strategy: Strategy) {
   switch (strategy.type) {
-    case 'dca':
-      return new DCAExecutor(strategy as DCAStrategy);
-    case 'grid':
-      return new GridExecutor(strategy as GridStrategy);
+    case 'dca': {
+      if (
+        'action' in strategy &&
+        'amount' in strategy &&
+        'slippage' in strategy
+      ) {
+        return new DCAExecutor(strategy as DCAStrategy);
+      }
+      throw new Error('Invalid DCA strategy configuration');
+    }
+    case 'grid': {
+      if (
+        'gridSize' in strategy &&
+        'profitTarget' in strategy &&
+        'stopLoss' in strategy &&
+        'maxGrids' in strategy &&
+        'retracementWait' in strategy
+      ) {
+        return new GridExecutor(strategy as GridStrategy);
+      }
+      throw new Error('Invalid Grid strategy configuration');
+    }
     default:
       throw new Error(`Unknown strategy type: ${strategy.type}`);
   }
@@ -32,33 +50,28 @@ async function main() {
     'function exactInputSingle(tuple(address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
   ];
 
-  config.strategies.forEach((strategy) => {
-    console.log(
-      `Scheduling strategy "${strategy.name}" every ${strategy.interval} seconds.`
-    );
-
-    const executor = createExecutor(strategy);
-
-    setInterval(async () => {
-      try {
-        const privateKey = process.env[strategy.privateKeyEnvKey];
-        if (!privateKey) {
-          throw new Error(`No private key found for strategy: ${strategy.name}`);
-        }
-
-        const wallet = new Wallet(privateKey, provider);
-        const router = new Contract(
-          uniswapV3RouterAddress,
-          uniswapV3RouterAbi,
-          wallet
-        );
-
-        await executor.execute(router, wallet);
-      } catch (error) {
-        console.error(`Error executing strategy ${strategy.name}:`, error);
+  for (const strategy of config.strategies) {
+    try {
+      const privateKey = process.env[strategy.privateKeyEnvKey];
+      if (!privateKey) {
+        console.error(`No private key found for strategy: ${strategy.name}`);
+        continue;
       }
-    }, strategy.interval * 1000);
-  });
+
+      const wallet = new Wallet(privateKey, provider);
+      const router = new Contract(
+        uniswapV3RouterAddress,
+        uniswapV3RouterAbi,
+        wallet
+      );
+
+      const executor = createExecutor(strategy);
+      await executor.start(router, wallet);
+      console.log(`Started strategy: ${strategy.name}`);
+    } catch (error) {
+      console.error(`Failed to start strategy ${strategy.name}:`, error);
+    }
+  }
 
   console.log('Uniswap v3 Bot is running. Press Ctrl+C to exit.');
 }
@@ -66,4 +79,4 @@ async function main() {
 main().catch((error) => {
   console.error('Fatal error in bot execution:', error);
   process.exit(1);
-}); 
+});

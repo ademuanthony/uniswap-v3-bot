@@ -3,6 +3,7 @@ import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
 import { getTokenDecimals, approveToken } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
+import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 
 export interface GridStrategy extends BaseStrategy {
   type: 'grid';
@@ -27,10 +28,40 @@ export class GridExecutor
 {
   private strategy: GridStrategy;
   private positions: GridPosition[] = [];
+  private _isRunning: boolean = false;
+  private stopRequested: boolean = false;
 
   constructor(strategy: GridStrategy) {
     super();
     this.strategy = strategy;
+  }
+
+  async start(router: Contract, wallet: Wallet): Promise<void> {
+    if (this._isRunning) return;
+
+    this._isRunning = true;
+    this.stopRequested = false;
+
+    // Continuous market watching loop
+    while (this._isRunning && !this.stopRequested) {
+      try {
+        await this.execute(router, wallet);
+        // Small delay to prevent too frequent checks
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } catch (error) {
+        console.error(`Error in Grid strategy ${this.strategy.name}:`, error);
+        this.stop();
+      }
+    }
+  }
+
+  stop(): void {
+    this.stopRequested = true;
+    this._isRunning = false;
+  }
+
+  isRunning(): boolean {
+    return this._isRunning;
   }
 
   async execute(router: Contract, wallet: Wallet): Promise<void> {
@@ -113,10 +144,18 @@ export class GridExecutor
         wallet
       );
 
-      // Use 0.1% slippage for entry
-      const amountOutMinimum = expectedAmountOut.mul(999).div(1000);
+      const entrySlippage =
+        this.strategy.slippage ?? DEFAULT_SLIPPAGE.GRID_ENTRY;
+      const amountOutMinimum = expectedAmountOut
+        .mul(BigInt(Math.floor((100 - entrySlippage) * 100)))
+        .div(10000);
 
-      await approveToken(quoteToken, router.target.toString(), amountIn, wallet);
+      await approveToken(
+        quoteToken,
+        router.target.toString(),
+        amountIn,
+        wallet
+      );
 
       await this.executeSwap(router, {
         tokenIn: quoteToken,
@@ -154,13 +193,21 @@ export class GridExecutor
       wallet
     );
 
-    // Use different slippage for profit taking vs stop loss
-    const slippage = type === 'profit' ? 0.1 : 0.5;
+    const slippage =
+      type === 'profit'
+        ? this.strategy.slippage ?? DEFAULT_SLIPPAGE.GRID_PROFIT
+        : this.strategy.slippage ?? DEFAULT_SLIPPAGE.GRID_LOSS;
+
     const amountOutMinimum = expectedAmountOut
       .mul(BigInt(Math.floor((100 - slippage) * 100)))
       .div(10000);
 
-    await approveToken(baseToken, router.target.toString(), position.amount, wallet);
+    await approveToken(
+      baseToken,
+      router.target.toString(),
+      position.amount,
+      wallet
+    );
 
     await this.executeSwap(router, {
       tokenIn: baseToken,
