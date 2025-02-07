@@ -1,10 +1,11 @@
 import { Contract, JsonRpcProvider, Wallet } from 'ethers';
 import { readFile } from 'fs/promises';
 import path from 'path';
-import { Config, Strategy } from './types/Strategy';
+import { Config, Strategy, LPStrategy } from './types/Strategy';
 import { DCAStrategy, DCAExecutor } from './strategies/DCAStrategy';
 import { GridStrategy, GridExecutor } from './strategies/GridStrategy';
 import { CLIManager } from './cli/CLIManager';
+import { LPExecutor } from './strategies/LPStrategy';
 
 const routerAddress = process.env.UNISWAP_V3_ROUTER_ADDRESS;
 const routerAbi = process.env.UNISWAP_V3_ROUTER_ABI;
@@ -38,6 +39,26 @@ function createExecutor(strategy: Strategy) {
         return new GridExecutor(strategy as GridStrategy);
       }
       throw new Error('Invalid Grid strategy configuration');
+    }
+    case 'lp': {
+      if (
+        'token0' in strategy &&
+        'token1' in strategy &&
+        'fee' in strategy &&
+        'token0Symbol' in strategy &&
+        'token1Symbol' in strategy &&
+        'token0Name' in strategy &&
+        'token1Name' in strategy &&
+        'chainId' in strategy &&
+        'priceRange' in strategy &&
+        'amount0Desired' in strategy &&
+        'amount1Desired' in strategy &&
+        'autoCompound' in strategy &&
+        'rebalance' in strategy
+      ) {
+        return new LPExecutor(strategy as LPStrategy);
+      }
+      throw new Error('Invalid LP strategy configuration');
     }
     default:
       throw new Error(`Unknown strategy type: ${strategy.type}`);

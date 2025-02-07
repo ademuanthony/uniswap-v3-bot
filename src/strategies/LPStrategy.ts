@@ -1,10 +1,14 @@
 import { Contract, Wallet, parseUnits } from 'ethers';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
-import { LPPosition, LPStrategy, StrategyExecutor } from '../types/Strategy';
+import {
+  LPPosition,
+  LPStrategy,
+  StrategyExecutor,
+  DEFAULT_SLIPPAGE,
+} from '../types/Strategy';
 import { Pool, nearestUsableTick, FeeAmount } from '@uniswap/v3-sdk';
 import { Token } from '@uniswap/sdk-core';
 import { getTokenDecimals } from '../utils/tokenUtils';
-import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 const POSITION_MANAGER_ADDRESS = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 const POSITION_MANAGER_ABI = [
   'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
@@ -679,5 +683,19 @@ export class LPExecutor
 
   public getName(): string {
     return this.strategy.name;
+  }
+
+  public getKey(): string {
+    return this.strategy.key;
+  }
+
+  public getDisplayInfo(): string[] {
+    return [
+      `Type: Liquidity Pool`,
+      `Pool: ${this.strategy.token0Symbol}-${this.strategy.token1Symbol}`,
+      `Range: ${this.strategy.priceRange.lowerBoundPercent}% to +${this.strategy.priceRange.upperBoundPercent}%`,
+      `Active Positions: ${this.positions.size}`,
+      `Auto-compound: ${this.strategy.autoCompound.enabled ? 'Yes' : 'No'}`,
+    ];
   }
 }

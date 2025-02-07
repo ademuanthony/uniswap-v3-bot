@@ -218,4 +218,17 @@ export class GridExecutor
       lastUpdate: new Date().toISOString(),
     };
   }
+
+  public getKey(): string {
+    return this.strategy.key;
+  }
+
+  public getDisplayInfo(): string[] {
+    return [
+      `Type: Grid Trading`,
+      `Size: ${this.strategy.totalSize} ${this.strategy.quote_token}`,
+      `Active Positions: ${this.positions.length}/${this.strategy.maxPositions}`,
+      `Profit Targets: ${this.strategy.profitTaking.targets.join(', ')}%`,
+    ];
+  }
 }

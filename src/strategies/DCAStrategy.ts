@@ -116,4 +116,17 @@ export class DCAExecutor
       lastUpdate: new Date().toISOString(),
     };
   }
+
+  public getKey(): string {
+    return this.strategy.key;
+  }
+
+  public getDisplayInfo(): string[] {
+    return [
+      `Type: DCA ${this.strategy.action.toUpperCase()}`,
+      `Amount: ${this.strategy.amount} ${this.strategy.quote_token}`,
+      `Interval: ${this.strategy.interval}s`,
+      `Last Run: ${new Date().toISOString()}`,
+    ];
+  }
 }

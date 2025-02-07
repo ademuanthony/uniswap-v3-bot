@@ -2,6 +2,7 @@ import { Contract, Wallet } from 'ethers';
 
 export interface BaseStrategy {
   name: string;
+  key: string; // Add this - unique identifier for commands
   type: string;
   privateKeyEnvKey: string;
   base_token: string;
@@ -35,7 +36,9 @@ export interface StrategyExecutor {
   stop(): void;
   isRunning(): boolean;
   getName(): string;
+  getKey(): string;
   getStatus(): Promise<any>;
+  getDisplayInfo(): string[];
 }
 
 export type Strategy = BaseStrategy & {

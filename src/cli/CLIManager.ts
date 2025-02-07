@@ -122,8 +122,9 @@ export class CLIManager {
   }
 
   public registerStrategy(strategy: StrategyExecutor): void {
-    this.strategies.set(strategy.getName(), strategy);
-    this.updateStrategyState(strategy.getName(), {
+    const key = strategy.getKey();
+    this.strategies.set(key, strategy);
+    this.updateStrategyState(key, {
       name: strategy.getName(),
       status: strategy.isRunning() ? 'Running' : 'Stopped',
       lastUpdate: new Date().toISOString(),
@@ -156,19 +157,17 @@ export class CLIManager {
 
   private updateStatePanel(): void {
     let content = '';
-    for (const state of this.strategyStates.values()) {
+    for (const [key, strategy] of this.strategies) {
+      const state = this.strategyStates.get(key);
+      if (!state) continue;
+
       content += `{bold}${state.name}{/bold}\n`;
       content += `Status: ${state.status}\n`;
 
-      if (state.positions && state.positions.length > 0) {
-        content += 'Positions:\n';
-        state.positions.forEach((pos: any) => {
-          const posStr = Object.entries(pos)
-            .map(([key, value]) => `${key}: ${value}`)
-            .join(', ');
-          content += `  - ${posStr}\n`;
-        });
-      }
+      const displayInfo = strategy.getDisplayInfo();
+      displayInfo.forEach((line) => {
+        content += `${line}\n`;
+      });
 
       content += `Last Update: ${state.lastUpdate}\n\n`;
     }
@@ -199,13 +198,13 @@ export class CLIManager {
   }
 
   private async handleCommand(command: string): Promise<void> {
-    const [action, strategyName, ...args] = command.trim().split(' ');
+    const [action, strategyKey, ...args] = command.trim().split(' ');
 
     if (!action) return;
 
-    const strategy = this.strategies.get(strategyName);
+    const strategy = this.strategies.get(strategyKey);
     if (!strategy && action !== 'help' && action !== 'quit') {
-      this.log(`Strategy not found: ${strategyName}`);
+      this.log(`Strategy not found: ${strategyKey}`);
       return;
     }
 
@@ -227,21 +226,21 @@ export class CLIManager {
         case 'start':
           if (!strategy) break;
           // await strategy.start(this.router, this.wallet);
-          this.log(`Started strategy: ${strategyName}`);
-          this.updateStrategyState(strategyName, { status: 'Running' });
+          this.log(`Started strategy: ${strategyKey}`);
+          this.updateStrategyState(strategyKey, { status: 'Running' });
           break;
 
         case 'stop':
           if (!strategy) break;
           strategy.stop();
-          this.log(`Stopped strategy: ${strategyName}`);
-          this.updateStrategyState(strategyName, { status: 'Stopped' });
+          this.log(`Stopped strategy: ${strategyKey}`);
+          this.updateStrategyState(strategyKey, { status: 'Stopped' });
           break;
 
         case 'status':
           if (!strategy) break;
           const status = await strategy.getStatus();
-          this.log(`Status for ${strategyName}:`);
+          this.log(`Status for ${strategyKey}:`);
           this.log(JSON.stringify(status, null, 2));
           break;
 
