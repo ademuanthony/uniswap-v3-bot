@@ -25,11 +25,11 @@ function createExecutor(strategy: Strategy) {
     }
     case 'grid': {
       if (
-        'gridSize' in strategy &&
-        'profitTarget' in strategy &&
+        'totalSize' in strategy &&
+        'entries' in strategy &&
+        'profitTaking' in strategy &&
         'stopLoss' in strategy &&
-        'maxGrids' in strategy &&
-        'retracementWait' in strategy
+        'maxPositions' in strategy
       ) {
         return new GridExecutor(strategy as GridStrategy);
       }
