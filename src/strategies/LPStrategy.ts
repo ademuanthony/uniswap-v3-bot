@@ -685,6 +685,10 @@ export class LPExecutor
     return this.strategy.name;
   }
 
+  public getWalletPrivateKey(): string {
+    return process.env[this.strategy.privateKeyEnvKey] as string;
+  }
+
   public getKey(): string {
     return this.strategy.key;
   }

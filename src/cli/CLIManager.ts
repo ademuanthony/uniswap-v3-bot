@@ -1,6 +1,6 @@
 import * as blessed from 'blessed';
 import { StrategyExecutor } from '../types/Strategy';
-import { Contract, Wallet } from 'ethers';
+import { Contract, JsonRpcProvider, Wallet } from 'ethers';
 
 interface StrategyState {
   name: string;
@@ -209,6 +209,9 @@ export class CLIManager {
       this.log('  <strategy> stop         - Stop a strategy');
       this.log('  <strategy> status       - Get strategy status');
       this.log('  <strategy> <command>    - Execute strategy-specific command');
+      this.log('  <strategy> help         - Show strategy-specific help');
+      this.log('  start                   - Start all strategies');
+      this.log('  stop                    - Stop all strategies');
       this.log('  quit                    - Shutdown bot');
       this.log('  help                    - Show this help');
       return;
@@ -216,6 +219,54 @@ export class CLIManager {
 
     if (strategyKey === 'quit') {
       await this.shutdown();
+      return;
+    }
+
+    if (strategyKey === 'start') {
+      for (const [name, strategy] of this.strategies) {
+        if (strategy.isRunning()) {
+          this.log(`Strategy ${name} is already running`);
+          continue;
+        }
+        try {
+          const provider = new JsonRpcProvider(process.env.ETH_RPC);
+          const wallet = new Wallet(
+            process.env[strategy.getWalletPrivateKey()] as string,
+            provider
+          );
+          const router = new Contract(
+            process.env.ROUTER_ADDRESS as string,
+            process.env.ROUTER_ABI as string,
+            wallet
+          );
+          console.log('Starting strategy:', name);
+          await strategy.start(router, wallet);
+          this.log(`Started strategy: ${name}`);
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          this.log(`Error starting strategy ${name}: ${errorMessage}`);
+        }
+      }
+      return;
+    }
+
+    if (strategyKey === 'stop') {
+      for (const [name, strategy] of this.strategies) {
+        if (!strategy.isRunning()) {
+          this.log(`Strategy ${name} is not running`);
+          continue;
+        }
+        try {
+          console.log('Stopping strategy:', name);
+          strategy.stop();
+          this.log(`Stopped strategy: ${name}`);
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          this.log(`Error stopping strategy ${name}: ${errorMessage}`);
+        }
+      }
       return;
     }
 

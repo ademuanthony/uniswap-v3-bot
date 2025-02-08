@@ -36,6 +36,7 @@ export interface StrategyExecutor {
   stop(): void;
   isRunning(): boolean;
   getName(): string;
+  getWalletPrivateKey(): string;
   getKey(): string;
   getStatus(): Promise<any>;
   getDisplayInfo(): string[];

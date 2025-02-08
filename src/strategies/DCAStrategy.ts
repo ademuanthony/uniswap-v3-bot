@@ -106,6 +106,10 @@ export class DCAExecutor
     return this.strategy.name;
   }
 
+  public getWalletPrivateKey(): string {
+    return process.env[this.strategy.privateKeyEnvKey] as string;
+  }
+
   public async getStatus(): Promise<any> {
     return {
       name: this.strategy.name,
