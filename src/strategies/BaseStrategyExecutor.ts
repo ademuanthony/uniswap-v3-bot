@@ -1,6 +1,15 @@
 import { Contract, Wallet } from 'ethers';
+import { Logger } from '../utils/logger';
 
 export abstract class BaseStrategyExecutor {
+  setLogger(logger: { log: (message: string) => void }) {
+    Logger.setLogger(logger);
+  }
+
+  protected log(message: string) {
+    Logger.log(message);
+  }
+
   protected async getQuote(
     tokenIn: string,
     tokenOut: string,
@@ -34,6 +43,28 @@ export abstract class BaseStrategyExecutor {
       wallet: Wallet;
     }
   ) {
+    // Check token balance first
+    const tokenContract = new Contract(
+      params.tokenIn,
+      ['function balanceOf(address) view returns (uint256)'],
+      params.wallet
+    );
+
+    const balance = await tokenContract.balanceOf(params.wallet.address);
+    if (balance < params.amountIn) {
+      throw new Error(
+        `Insufficient balance for swap. Required: ${params.amountIn}, Available: ${balance}`
+      );
+    }
+
+    // Approve token spending
+    const approvalTx = await tokenContract.approve(
+      router.target,
+      params.amountIn
+    );
+    await approvalTx.wait();
+    this.log(`Token approval confirmed in block ${approvalTx.blockNumber}`);
+
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
     const fee = 3000; // 0.3%
     const sqrtPriceLimitX96 = 0; // no price limit
@@ -50,9 +81,9 @@ export abstract class BaseStrategyExecutor {
     };
 
     const tx = await router.exactInputSingle(swapParams, { gasLimit: 300000 });
-    console.log(`Transaction submitted: ${tx.hash}`);
+    this.log(`Transaction submitted: ${tx.hash}`);
     const receipt = await tx.wait();
-    console.log(`Transaction confirmed in block ${receipt.blockNumber}`);
+    this.log(`Transaction confirmed in block ${receipt.blockNumber}`);
     return receipt;
   }
-} 
+}

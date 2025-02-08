@@ -67,10 +67,9 @@ npm start
       "key": "dca_usdc_eth",
       "type": "dca",
       "privateKeyEnvKey": "STRATEGY_1_KEY",
-      "base_token": "ETH",
-      "quote_token": "USDC",
+      "base_token": "USDC",
+      "quote_token": "ETH",
       "interval": 3600,
-      "action": "buy",
       "amount": "100",
       "slippage": 0.5
     }

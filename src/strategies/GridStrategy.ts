@@ -4,6 +4,7 @@ import { tokenAddresses } from '../tokens';
 import { getTokenDecimals, approveToken } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
+import { Web3Helper } from '../utils/web3';
 
 export interface GridStrategy extends BaseStrategy {
   type: 'grid';
@@ -48,8 +49,11 @@ export class GridExecutor
     this.strategy = strategy;
   }
 
-  async start(router: Contract, wallet: Wallet): Promise<void> {
+  async start(): Promise<void> {
     if (this._isRunning) return;
+
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+    const router = Web3Helper.getRouter(wallet);
 
     this._isRunning = true;
     this.stopRequested = false;
@@ -61,7 +65,7 @@ export class GridExecutor
           setTimeout(resolve, this.strategy.interval * 1000)
         );
       } catch (error) {
-        console.error(`Error in Grid strategy ${this.strategy.name}:`, error);
+        this.log(`Error in Grid strategy ${this.strategy.name}: ${error}`);
       }
     }
   }
@@ -111,13 +115,35 @@ export class GridExecutor
     }
 
     const currentPrice = await this.getCurrentPrice(wallet);
+    const quoteToken = tokenAddresses[this.strategy.quote_token.toUpperCase()];
 
+    // Check quote token balance first
+    const tokenContract = new Contract(
+      quoteToken,
+      ['function balanceOf(address) view returns (uint256)'],
+      wallet
+    );
+
+    const quoteDecimals = await getTokenDecimals(quoteToken, wallet);
+    const requiredAmount = parseUnits(this.strategy.totalSize, quoteDecimals);
+    const balance = await tokenContract.balanceOf(wallet.address);
+
+    if (balance < requiredAmount) {
+      this.log(
+        `Insufficient ${this.strategy.quote_token} balance for grid entry. ` +
+          `Required: ${this.strategy.totalSize}, Available: ${balance}`
+      );
+      return;
+    }
+
+    // Continue with entry logic if balance is sufficient
     for (const entry of this.strategy.entries) {
       const targetPrice =
-        (currentPrice * BigInt(Math.floor((1 - entry.priceChange) * 100))) /
-        BigInt(100);
+        currentPrice -
+        (currentPrice * BigInt(Math.floor(entry.priceChange * 100))) /
+          BigInt(10000);
 
-      if (currentPrice <= targetPrice) {
+      if (this.positions.length < this.strategy.maxPositions) {
         await this.openPosition(targetPrice, router, wallet);
       }
     }
@@ -177,6 +203,8 @@ export class GridExecutor
           BigInt(Math.floor((1 - this.strategy.stopLoss.target) * 100))) /
         BigInt(100),
     });
+
+    this.log(`Opening position at price ${targetPrice}`);
   }
 
   private async closePosition(
@@ -197,6 +225,8 @@ export class GridExecutor
         BigInt(10000),
       wallet,
     });
+
+    this.log(`Closing position at price ${position.entryPrice}`);
   }
 
   public getName(): string {

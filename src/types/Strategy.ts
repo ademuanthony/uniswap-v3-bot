@@ -32,7 +32,7 @@ export interface Config {
 
 export interface StrategyExecutor {
   execute(router: Contract, wallet: Wallet): Promise<void>;
-  start(router: Contract, wallet: Wallet): Promise<void>;
+  start(): Promise<void>;
   stop(): void;
   isRunning(): boolean;
   getName(): string;
@@ -40,7 +40,8 @@ export interface StrategyExecutor {
   getKey(): string;
   getStatus(): Promise<any>;
   getDisplayInfo(): string[];
-  handleCommand(action: string, args: string[]): Promise<string>; // Returns response message
+  handleCommand(action: string, args: string[]): Promise<string>;
+  setLogger(logger: { log: (message: string) => void }): void;
 }
 
 export type Strategy = BaseStrategy & {

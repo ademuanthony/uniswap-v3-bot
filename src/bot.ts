@@ -1,4 +1,3 @@
-import { Contract, JsonRpcProvider, Wallet } from 'ethers';
 import { readFile } from 'fs/promises';
 import path from 'path';
 import { Config, Strategy, LPStrategy } from './types/Strategy';
@@ -6,9 +5,10 @@ import { DCAStrategy, DCAExecutor } from './strategies/DCAStrategy';
 import { GridStrategy, GridExecutor } from './strategies/GridStrategy';
 import { CLIManager } from './cli/CLIManager';
 import { LPExecutor } from './strategies/LPStrategy';
+import dotenv from 'dotenv';
+import { Logger } from './utils/logger';
 
-const routerAddress = process.env.UNISWAP_V3_ROUTER_ADDRESS;
-const routerAbi = process.env.UNISWAP_V3_ROUTER_ABI;
+dotenv.config();
 
 async function loadConfig(configPath: string = 'config.json'): Promise<Config> {
   const fullPath = path.resolve(process.cwd(), configPath);
@@ -20,9 +20,12 @@ function createExecutor(strategy: Strategy) {
   switch (strategy.type) {
     case 'dca': {
       if (
-        'action' in strategy &&
         'amount' in strategy &&
-        'slippage' in strategy
+        'slippage' in strategy &&
+        'interval' in strategy &&
+        'base_token' in strategy &&
+        'quote_token' in strategy &&
+        'privateKeyEnvKey' in strategy
       ) {
         return new DCAExecutor(strategy as DCAStrategy);
       }
@@ -30,11 +33,17 @@ function createExecutor(strategy: Strategy) {
     }
     case 'grid': {
       if (
+        'base_token' in strategy &&
+        'quote_token' in strategy &&
         'totalSize' in strategy &&
         'entries' in strategy &&
         'profitTaking' in strategy &&
         'stopLoss' in strategy &&
-        'maxPositions' in strategy
+        'maxPositions' in strategy &&
+        'privateKeyEnvKey' in strategy &&
+        'key' in strategy &&
+        'name' in strategy &&
+        'interval' in strategy
       ) {
         return new GridExecutor(strategy as GridStrategy);
       }
@@ -69,8 +78,12 @@ async function main() {
   const cli = new CLIManager();
   try {
     const config = await loadConfig('config.json');
-    const providerUrl = process.env.PROVIDER_URL;
-    const provider = new JsonRpcProvider(providerUrl);
+    Logger.setLogger(cli); // Set global logger
+
+    // Add cleanup handlers
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+    process.on('exit', cleanup);
 
     cli.log('Loading strategies...');
 
@@ -82,10 +95,8 @@ async function main() {
           continue;
         }
 
-        const wallet = new Wallet(privateKey, provider);
         const executor = createExecutor(strategy);
-
-        // Register strategy with CLI
+        executor.setLogger(cli);
         cli.registerStrategy(executor);
         cli.log(`Registered strategy: ${strategy.name}`);
 
@@ -94,7 +105,7 @@ async function main() {
           const status = await executor.getStatus();
           cli.updateStrategyState(strategy.name, status);
         }, 5000);
-      } catch (error: unknown) {
+      } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
         cli.log(
@@ -108,11 +119,16 @@ async function main() {
       'Available commands: start <strategy>, stop <strategy>, status <strategy>'
     );
   } catch (error: unknown) {
+    cleanup();
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error';
     cli.log(`Fatal error in bot execution: ${errorMessage}`);
     process.exit(1);
   }
+}
+
+function cleanup() {
+  Logger.restoreConsole();
 }
 
 main();

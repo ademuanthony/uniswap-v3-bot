@@ -4,11 +4,11 @@ import { tokenAddresses } from '../tokens';
 import { getTokenDecimals, approveToken } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
+import { Web3Helper } from '../utils/web3';
 
 export interface DCAStrategy extends BaseStrategy {
   type: 'dca';
-  action: 'buy' | 'sell';
-  amount: string;
+  amount: string; // Amount of token_in to swap
   slippage: number;
 }
 
@@ -25,15 +25,18 @@ export class DCAExecutor
     this.strategy = strategy;
   }
 
-  async start(router: Contract, wallet: Wallet): Promise<void> {
+  async start(): Promise<void> {
     if (this._isRunning) return;
+
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+    const router = Web3Helper.getRouter(wallet);
 
     this._isRunning = true;
     this.interval = setInterval(async () => {
       try {
         await this.execute(router, wallet);
       } catch (error) {
-        console.error(`Error in DCA strategy ${this.strategy.name}:`, error);
+        this.log(`Error in DCA strategy ${this.strategy.name}: ${error}`);
       }
     }, this.strategy.interval * 1000);
   }
@@ -51,7 +54,8 @@ export class DCAExecutor
   }
 
   async execute(router: Contract, wallet: Wallet): Promise<void> {
-    const { tokenIn, tokenOut } = this.getTokenPairs();
+    const tokenIn = tokenAddresses[this.strategy.base_token.toUpperCase()];
+    const tokenOut = tokenAddresses[this.strategy.quote_token.toUpperCase()];
     const tokenInDecimals = await getTokenDecimals(tokenIn, wallet);
     const amountIn = parseUnits(this.strategy.amount, tokenInDecimals);
 
@@ -78,30 +82,6 @@ export class DCAExecutor
     });
   }
 
-  private getTokenPairs() {
-    const [tokenInSymbol, tokenOutSymbol] =
-      this.strategy.action === 'buy'
-        ? [
-            this.strategy.quote_token.toUpperCase(),
-            this.strategy.base_token.toUpperCase(),
-          ]
-        : [
-            this.strategy.base_token.toUpperCase(),
-            this.strategy.quote_token.toUpperCase(),
-          ];
-
-    const tokenIn = tokenAddresses[tokenInSymbol];
-    const tokenOut = tokenAddresses[tokenOutSymbol];
-
-    if (!tokenIn || !tokenOut) {
-      throw new Error(
-        `Token address not found for: ${tokenInSymbol} or ${tokenOutSymbol}`
-      );
-    }
-
-    return { tokenIn, tokenOut, tokenInSymbol, tokenOutSymbol };
-  }
-
   public getName(): string {
     return this.strategy.name;
   }
@@ -115,7 +95,6 @@ export class DCAExecutor
       name: this.strategy.name,
       status: this.isRunning() ? 'Running' : 'Stopped',
       type: 'dca',
-      action: this.strategy.action,
       amount: this.strategy.amount,
       lastUpdate: new Date().toISOString(),
     };
@@ -127,8 +106,8 @@ export class DCAExecutor
 
   public getDisplayInfo(): string[] {
     return [
-      `Type: DCA ${this.strategy.action.toUpperCase()}`,
-      `Amount: ${this.strategy.amount} ${this.strategy.quote_token}`,
+      `Type: DCA`,
+      `Amount: ${this.strategy.amount} ${this.strategy.base_token}`,
       `Interval: ${this.strategy.interval}s`,
       `Last Run: ${new Date().toISOString()}`,
     ];

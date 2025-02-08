@@ -11,7 +11,8 @@ import { Token } from '@uniswap/sdk-core';
 import { getTokenDecimals } from '../utils/tokenUtils';
 import * as fs from 'fs';
 import * as path from 'path';
-import { LPPositionData, LPStrategyStorage } from '../types/Storage';
+import { LPStrategyStorage } from '../types/Storage';
+import { Web3Helper } from '../utils/web3';
 
 const POSITION_MANAGER_ADDRESS = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 const POSITION_MANAGER_ABI = [
@@ -132,34 +133,32 @@ export class LPExecutor
         }
       }
     } catch (error) {
-      console.error('Error loading LP positions:', error);
+      this.log(`Error loading LP positions: ${error}`);
     }
   }
 
-  async start(router: Contract, wallet: Wallet): Promise<void> {
+  async start(): Promise<void> {
     if (this._isRunning) return;
 
-    this._isRunning = true;
-    this.stopRequested = false;
-
-    // Initialize position manager
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     const positionManager = new Contract(
       POSITION_MANAGER_ADDRESS,
       POSITION_MANAGER_ABI,
       wallet
     );
 
+    this._isRunning = true;
+    this.stopRequested = false;
+
     while (this._isRunning && !this.stopRequested) {
       try {
         await this.monitor(positionManager, wallet);
-
         if (this.strategy.autoCompound.enabled) {
           await this.checkAndCompound(positionManager, wallet);
         }
-
         await new Promise((resolve) => setTimeout(resolve, 60 * 1000));
       } catch (error) {
-        console.error(`Error in LP strategy ${this.strategy.name}:`, error);
+        this.log(`Error in LP strategy ${this.strategy.name}: ${error}`);
       }
     }
   }
@@ -187,7 +186,7 @@ export class LPExecutor
         !currentPosition.inRange &&
         priceDeviation > this.strategy.rebalance.threshold
       ) {
-        console.log(
+        this.log(
           `Position ${tokenId} out of range. Price deviation: ${priceDeviation.toFixed(
             2
           )}%`
@@ -554,7 +553,7 @@ export class LPExecutor
     wallet: Wallet
   ): Promise<void> {
     const position = await this.getPosition(tokenId, positionManager, wallet);
-    console.log(
+    this.log(
       `Rebalancing position ${tokenId} with liquidity ${position.liquidity}`
     );
 
@@ -601,7 +600,7 @@ export class LPExecutor
     try {
       return await operation();
     } catch (error) {
-      console.error(`${errorMessage}:`, error);
+      this.log(`${errorMessage}: ${error}`);
       return null;
     }
   }
@@ -716,16 +715,12 @@ export class LPExecutor
       tickSpacing
     );
 
-    console.log(
+    this.log(
       `Setting position range: ${lowerBoundPercent}% to ${upperBoundPercent}% from current price`
     );
-    console.log(`Current tick: ${currentTick}`);
-    console.log(
-      `Lower tick: ${tickLower} (${lowerTickDelta} ticks from current)`
-    );
-    console.log(
-      `Upper tick: ${tickUpper} (${upperTickDelta} ticks from current)`
-    );
+    this.log(`Current tick: ${currentTick}`);
+    this.log(`Lower tick: ${tickLower} (${lowerTickDelta} ticks from current)`);
+    this.log(`Upper tick: ${tickUpper} (${upperTickDelta} ticks from current)`);
 
     return { tickLower, tickUpper };
   }

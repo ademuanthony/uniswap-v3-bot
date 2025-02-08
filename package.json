@@ -16,6 +16,7 @@
     "@types/blessed": "^0.1.25",
     "@uniswap/v3-sdk": "^3.24.0",
     "blessed": "^0.1.81",
+    "dotenv": "^16.4.7",
     "ethers": "^6.13.5",
     "jsbi": "^4.3.0"
   },

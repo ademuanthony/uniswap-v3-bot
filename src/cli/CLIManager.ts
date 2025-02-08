@@ -228,25 +228,17 @@ export class CLIManager {
           this.log(`Strategy ${name} is already running`);
           continue;
         }
-        try {
-          const provider = new JsonRpcProvider(process.env.ETH_RPC);
-          const wallet = new Wallet(
-            process.env[strategy.getWalletPrivateKey()] as string,
-            provider
-          );
-          const router = new Contract(
-            process.env.ROUTER_ADDRESS as string,
-            process.env.ROUTER_ABI as string,
-            wallet
-          );
-          console.log('Starting strategy:', name);
-          await strategy.start(router, wallet);
-          this.log(`Started strategy: ${name}`);
-        } catch (error: unknown) {
-          const errorMessage =
-            error instanceof Error ? error.message : 'Unknown error';
-          this.log(`Error starting strategy ${name}: ${errorMessage}`);
-        }
+
+        (async () => {
+          try {
+            this.log(`Starting strategy: ${name}`);
+            await strategy.start();
+          } catch (error: unknown) {
+            const errorMessage =
+              error instanceof Error ? error.message : 'Unknown error';
+            this.log(`Error starting strategy ${name}: ${errorMessage}`);
+          }
+        })();
       }
       return;
     }
