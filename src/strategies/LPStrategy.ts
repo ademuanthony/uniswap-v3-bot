@@ -9,6 +9,10 @@ import {
 import { Pool, nearestUsableTick, FeeAmount } from '@uniswap/v3-sdk';
 import { Token } from '@uniswap/sdk-core';
 import { getTokenDecimals } from '../utils/tokenUtils';
+import * as fs from 'fs';
+import * as path from 'path';
+import { LPPositionData, LPStrategyStorage } from '../types/Storage';
+
 const POSITION_MANAGER_ADDRESS = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 const POSITION_MANAGER_ABI = [
   'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
@@ -56,10 +60,80 @@ export class LPExecutor
   private _isRunning: boolean = false;
   private stopRequested: boolean = false;
   private poolCache: Map<string, Pool> = new Map();
+  private storageDir = './.data/lp';
+  private storageFile: string;
 
   constructor(strategy: LPStrategy) {
     super();
     this.strategy = strategy;
+    this.storageFile = path.join(this.storageDir, `${strategy.key}.json`);
+    this.initStorage();
+    this.loadPositions();
+  }
+
+  private initStorage() {
+    if (!fs.existsSync(this.storageDir)) {
+      fs.mkdirSync(this.storageDir, { recursive: true });
+    }
+  }
+
+  private async savePositions() {
+    const storage: LPStrategyStorage = {
+      positions: {},
+      lastUpdate: Date.now(),
+    };
+
+    for (const [tokenId, position] of this.positions) {
+      storage.positions[tokenId] = {
+        tokenId,
+        entryPrice: position.entryPrice.toString(),
+        tickLower: position.tickLower,
+        tickUpper: position.tickUpper,
+        liquidity: position.liquidity.toString(),
+        token0Balance: position.amount0.toString(),
+        token1Balance: position.amount1.toString(),
+        lastCompounded: position.lastCompounded,
+        timestamp: position.timestamp,
+      };
+    }
+
+    await fs.promises.writeFile(
+      this.storageFile,
+      JSON.stringify(storage, null, 2)
+    );
+  }
+
+  private async loadPositions() {
+    try {
+      if (fs.existsSync(this.storageFile)) {
+        const data = await fs.promises.readFile(this.storageFile, 'utf8');
+        const storage: LPStrategyStorage = JSON.parse(data);
+
+        for (const [tokenId, posData] of Object.entries(storage.positions)) {
+          this.positions.set(Number(tokenId), {
+            tokenId: Number(tokenId),
+            entryPrice: BigInt(posData.entryPrice),
+            liquidity: BigInt(posData.liquidity),
+            amount0: BigInt(posData.token0Balance),
+            amount1: BigInt(posData.token1Balance),
+            token0: '',
+            token1: '',
+            fee: 0,
+            feeGrowthInside0LastX128: BigInt(0),
+            feeGrowthInside1LastX128: BigInt(0),
+            tokensOwed0: BigInt(0),
+            tokensOwed1: BigInt(0),
+            inRange: false,
+            tickLower: posData.tickLower,
+            tickUpper: posData.tickUpper,
+            lastCompounded: posData.lastCompounded,
+            timestamp: posData.timestamp,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error loading LP positions:', error);
+    }
   }
 
   async start(router: Contract, wallet: Wallet): Promise<void> {
@@ -100,16 +174,37 @@ export class LPExecutor
         positionManager,
         wallet
       );
+      const currentPrice = await this.getCurrentPrice(wallet);
 
-      // Check if position is in range
-      if (currentPosition.inRange !== position.inRange) {
+      // Calculate price deviation from entry price
+      const priceDeviation = Math.abs(
+        ((Number(currentPrice) - Number(position.entryPrice)) /
+          Number(position.entryPrice)) *
+          100
+      );
+
+      if (
+        !currentPosition.inRange &&
+        priceDeviation > this.strategy.rebalance.threshold
+      ) {
+        console.log(
+          `Position ${tokenId} out of range. Price deviation: ${priceDeviation.toFixed(
+            2
+          )}%`
+        );
         if (this.strategy.rebalance.enabled) {
           await this.rebalancePosition(tokenId, positionManager, wallet);
         }
       }
 
       // Update position data
-      this.positions.set(tokenId, currentPosition);
+      this.positions.set(tokenId, {
+        ...currentPosition,
+        entryPrice: position.entryPrice, // Preserve entry price
+      });
+
+      // Save updated positions to storage
+      await this.savePositions();
     }
   }
 
@@ -324,6 +419,12 @@ export class LPExecutor
     // Initialize position tracking
     const position = await this.getPosition(tokenId, positionManager, wallet);
     this.positions.set(tokenId, position);
+
+    // Store entry price with new position
+    const currentPrice = await this.getCurrentPrice(wallet);
+    position.entryPrice = currentPrice;
+    this.positions.set(tokenId, position);
+    await this.savePositions();
   }
 
   public async getStatus(): Promise<LPStrategyStatus> {
@@ -360,7 +461,7 @@ export class LPExecutor
 
     // Get pool state directly from contract
     const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
-    const { tick } = await poolContract.slot0();
+    const { tick, sqrtPriceX96 } = await poolContract.slot0();
 
     return {
       tokenId,
@@ -379,6 +480,7 @@ export class LPExecutor
       inRange: position.tickLower <= tick && tick <= position.tickUpper,
       lastCompounded: Date.now(),
       timestamp: Date.now(),
+      entryPrice: BigInt(sqrtPriceX96),
     };
   }
 
@@ -416,7 +518,8 @@ export class LPExecutor
       this.strategy.autoCompound.minFeesForCompound,
       18
     );
-    return fees.amount0 >= minFees || fees.amount1 >= minFees;
+    // Compound if we have amount0 more than the minimum fees
+    return fees.amount0 >= minFees;
   }
 
   private async reinvestFees(
@@ -425,8 +528,6 @@ export class LPExecutor
     positionManager: Contract,
     wallet: Wallet
   ): Promise<void> {
-    const position = await this.getPosition(tokenId, positionManager, wallet);
-
     const params = {
       tokenId,
       amount0Desired: fees.amount0,
@@ -453,10 +554,12 @@ export class LPExecutor
     wallet: Wallet
   ): Promise<void> {
     const position = await this.getPosition(tokenId, positionManager, wallet);
+    console.log(
+      `Rebalancing position ${tokenId} with liquidity ${position.liquidity}`
+    );
 
     // Remove liquidity from current position
     await this.removeLiquidity(tokenId, position.liquidity, positionManager);
-
     await this.createPosition(positionManager, wallet);
   }
 
@@ -518,9 +621,10 @@ export class LPExecutor
     }, `Error executing LP strategy ${this.strategy.name}`);
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
     this.stopRequested = true;
     this._isRunning = false;
+    await this.savePositions();
   }
 
   public isRunning(): boolean {
@@ -716,5 +820,17 @@ export class LPExecutor
       default:
         return `Unknown command: ${action}. Available commands: rebalance, compound`;
     }
+  }
+
+  private async getCurrentPrice(wallet: Wallet): Promise<bigint> {
+    const poolAddress = await this.getPoolAddress(
+      this.strategy.token0,
+      this.strategy.token1,
+      this.strategy.fee,
+      wallet
+    );
+    const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
+    const { sqrtPriceX96 } = await poolContract.slot0();
+    return BigInt(sqrtPriceX96);
   }
 }

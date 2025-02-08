@@ -102,4 +102,5 @@ export interface LPPosition {
   inRange: boolean;
   lastCompounded: number;
   timestamp: number;
+  entryPrice: bigint;
 }
