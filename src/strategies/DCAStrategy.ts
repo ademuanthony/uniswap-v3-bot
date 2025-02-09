@@ -1,4 +1,4 @@
-import { Contract, Wallet, parseUnits } from 'ethers';
+import { Wallet, parseUnits } from 'ethers';
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
 import { getTokenDecimals } from '../utils/tokenUtils';
