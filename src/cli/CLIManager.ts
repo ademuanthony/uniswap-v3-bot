@@ -1,6 +1,5 @@
 import * as blessed from 'blessed';
 import { StrategyExecutor } from '../types/Strategy';
-import { Contract, JsonRpcProvider, Wallet } from 'ethers';
 
 interface StrategyState {
   name: string;

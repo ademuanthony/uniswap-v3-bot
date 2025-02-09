@@ -14,10 +14,11 @@
   "description": "",
   "dependencies": {
     "@types/blessed": "^0.1.25",
-    "@uniswap/v3-sdk": "^3.24.0",
+    "@uniswap/v3-sdk": "^3.10.0",
+    "@uniswap/sdk-core": "^3.2.0",
     "blessed": "^0.1.81",
-    "dotenv": "^16.4.7",
-    "ethers": "^6.13.5",
+    "dotenv": "^16.0.0",
+    "ethers": "^5.7.2",
     "jsbi": "^4.3.0"
   },
   "devDependencies": {

@@ -1,10 +1,11 @@
-import { Wallet, parseUnits } from 'ethers';
+import { Wallet } from 'ethers';
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
 import { getTokenDecimals } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 import { Web3Helper } from '../utils/web3';
+import { parseUnits } from 'ethers/lib/utils';
 
 export interface DCAStrategy extends BaseStrategy {
   type: 'dca';

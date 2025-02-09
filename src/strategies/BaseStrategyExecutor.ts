@@ -1,4 +1,4 @@
-import { Contract, Wallet } from 'ethers';
+import { Contract, Wallet, BigNumber } from 'ethers';
 import { Logger } from '../utils/logger';
 
 export abstract class BaseStrategyExecutor {
@@ -13,7 +13,7 @@ export abstract class BaseStrategyExecutor {
   protected async getQuote(
     tokenIn: string,
     tokenOut: string,
-    amountIn: bigint,
+    amountIn: BigNumber,
     wallet: Wallet
   ) {
     const quoterAddress = '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6';
@@ -36,11 +36,11 @@ export abstract class BaseStrategyExecutor {
   protected async executeSwap(params: {
     tokenIn: string;
     tokenOut: string;
-    amountIn: bigint;
+    amountIn: BigNumber;
     slippage: number;
     wallet: Wallet;
   }) {
-    const ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
+    const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS as string;
     const ROUTER_ABI = [
       'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
     ];
@@ -59,19 +59,19 @@ export abstract class BaseStrategyExecutor {
 
     const [balance, allowance] = await Promise.all([
       tokenContract.balanceOf(params.wallet.address),
-      tokenContract.allowance(params.wallet.address, router.target),
+      tokenContract.allowance(params.wallet.address, router.address),
     ]);
 
-    if (balance < params.amountIn) {
+    if (balance.lt(params.amountIn)) {
       throw new Error(
-        `Insufficient balance for swap. Required: ${params.amountIn}, Available: ${balance}`
+        `Insufficient balance for swap. Required: ${params.amountIn.toString()}, Available: ${balance.toString()}`
       );
     }
 
     // Approve only if needed
-    if (allowance < params.amountIn) {
+    if (allowance.lt(params.amountIn)) {
       const approvalTx = await tokenContract.approve(
-        router.target,
+        router.address,
         params.amountIn
       );
       await approvalTx.wait();
@@ -86,9 +86,9 @@ export abstract class BaseStrategyExecutor {
       params.wallet
     );
 
-    const amountOutMinimum =
-      (expectedAmountOut * BigInt(Math.floor((1 - params.slippage) * 10000))) /
-      BigInt(10000);
+    const amountOutMinimum = expectedAmountOut
+      .mul(BigNumber.from(Math.floor((1 - params.slippage) * 10000)))
+      .div(10000);
 
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
     const fee = 3000; // 0.3%

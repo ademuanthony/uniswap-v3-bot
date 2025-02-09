@@ -1,4 +1,4 @@
-import { Contract, JsonRpcProvider, Wallet } from 'ethers';
+import { Contract, Wallet, ethers } from 'ethers';
 
 const ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
 const ROUTER_ABI = [
@@ -6,11 +6,11 @@ const ROUTER_ABI = [
 ];
 
 export class Web3Helper {
-  static getProvider(): JsonRpcProvider {
+  static getProvider(): ethers.providers.JsonRpcProvider {
     if (!process.env.ETH_RPC) {
       throw new Error('ETH_RPC environment variable not set');
     }
-    return new JsonRpcProvider(process.env.ETH_RPC);
+    return new ethers.providers.JsonRpcProvider(process.env.ETH_RPC);
   }
 
   static getWallet(privateKey: string): Wallet {

@@ -1,4 +1,5 @@
-import { Contract, Wallet, parseUnits } from 'ethers';
+import { Contract, Wallet, BigNumber } from 'ethers';
+import { parseUnits } from 'ethers/lib/utils';
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
 import { getTokenDecimals } from '../utils/tokenUtils';
@@ -29,7 +30,7 @@ export interface GridStrategy extends BaseStrategy {
 
 interface GridPosition {
   entryPrice: bigint;
-  amount: bigint;
+  amount: BigNumber;
   timestamp: number;
   profitTarget: bigint;
   stopLoss: bigint;
@@ -83,9 +84,7 @@ export class GridExecutor
     await this.openNewPositionsIfNeeded(wallet);
   }
 
-  private async checkAndUpdatePositions(
-    wallet: Wallet
-  ): Promise<void> {
+  private async checkAndUpdatePositions(wallet: Wallet): Promise<void> {
     for (const position of [...this.positions]) {
       const currentPrice = await this.getCurrentPrice(wallet);
 
@@ -104,9 +103,7 @@ export class GridExecutor
     }
   }
 
-  private async openNewPositionsIfNeeded(
-    wallet: Wallet
-  ): Promise<void> {
+  private async openNewPositionsIfNeeded(wallet: Wallet): Promise<void> {
     if (this.positions.length >= this.strategy.maxPositions) {
       return;
     }
@@ -190,16 +187,14 @@ export class GridExecutor
       entryPrice: targetPrice,
       amount,
       timestamp: Date.now(),
-      profitTarget:
-        (targetPrice *
-          BigInt(
-            Math.floor((1 + this.strategy.profitTaking.targets[0]) * 100)
-          )) /
-        BigInt(100),
-      stopLoss:
-        (targetPrice *
-          BigInt(Math.floor((1 - this.strategy.stopLoss.target) * 100))) /
-        BigInt(100),
+      profitTarget: BigNumber.from(targetPrice)
+        .mul(100 + Math.floor(this.strategy.profitTaking.targets[0] * 100))
+        .div(100)
+        .toBigInt(),
+      stopLoss: BigNumber.from(targetPrice)
+        .mul(100 - Math.floor(this.strategy.stopLoss.target * 100))
+        .div(100)
+        .toBigInt(),
     });
 
     this.log(`Opening position at price ${targetPrice}`);

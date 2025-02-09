@@ -1,4 +1,4 @@
-import { Contract, Wallet, parseUnits } from 'ethers';
+import { Contract, Wallet, BigNumber } from 'ethers';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import {
   LPPosition,
@@ -13,6 +13,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LPStrategyStorage } from '../types/Storage';
 import { Web3Helper } from '../utils/web3';
+import { parseUnits } from 'ethers/lib/utils';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as string;
 const POSITION_MANAGER_ABI = [
@@ -154,12 +158,15 @@ export class LPExecutor
   async start(): Promise<void> {
     if (this._isRunning) return;
 
+    console.log('POSITION_MANAGER_ADDRESS', POSITION_MANAGER_ADDRESS);
+
     const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     const positionManager = new Contract(
       POSITION_MANAGER_ADDRESS,
       POSITION_MANAGER_ABI,
       wallet
     );
+
 
     this._isRunning = true;
     this.stopRequested = false;
@@ -293,17 +300,19 @@ export class LPExecutor
     // Total value to invest (in terms of token0)
     const totalValue = parseUnits(this.strategy.amount0Desired, token0Decimals);
 
-    let amount0Desired: bigint;
-    let amount1Desired: bigint;
+    let amount0Desired: BigNumber;
+    let amount1Desired: BigNumber;
 
     if (currentSqrtPrice <= sqrtRatioA) {
       // Price is below range - only token0 needed
-      amount0Desired = totalValue;
-      amount1Desired = BigInt(0);
+      amount0Desired = BigNumber.from(totalValue);
+      amount1Desired = BigNumber.from(0);
     } else if (currentSqrtPrice >= sqrtRatioB) {
       // Price is above range - only token1 needed
-      amount0Desired = BigInt(0);
-      amount1Desired = totalValue * BigInt(Math.floor(currentSqrtPrice ** 2));
+      amount0Desired = BigNumber.from(0);
+      amount1Desired = BigNumber.from(totalValue)
+        .mul(BigNumber.from(Math.floor(currentSqrtPrice ** 2 * 1e6)))
+        .div(BigNumber.from(1e6));
     } else {
       // Price is in range - need both tokens
       const token0Portion =
@@ -311,12 +320,16 @@ export class LPExecutor
       const token1Portion =
         (currentSqrtPrice - sqrtRatioA) / (sqrtRatioB - sqrtRatioA);
 
-      amount0Desired =
-        (totalValue * BigInt(Math.floor(token0Portion * 1e6))) / BigInt(1e6);
-      amount1Desired =
-        (totalValue *
-          BigInt(Math.floor(token1Portion * currentSqrtPrice ** 2 * 1e6))) /
-        BigInt(1e6);
+      amount0Desired = BigNumber.from(totalValue)
+        .mul(BigNumber.from(Math.floor(token0Portion * 1e6)))
+        .div(BigNumber.from(1e6));
+      amount1Desired = BigNumber.from(totalValue)
+        .mul(
+          BigNumber.from(
+            Math.floor(token1Portion * currentSqrtPrice ** 2 * 1e6)
+          )
+        )
+        .div(BigNumber.from(1e6));
     }
 
     // Get configured slippage or use defaults
@@ -349,14 +362,17 @@ export class LPExecutor
     ]);
 
     // Calculate required swaps
-    if (balance0 < amount0Desired) {
-      const shortfall0 = amount0Desired - balance0;
+    if (balance0.lt(amount0Desired)) {
+      const shortfall0 = amount0Desired.sub(balance0);
       // Need to swap token1 for token0 (add configured slippage)
-      const token1ToSwap =
-        (shortfall0 *
-          BigInt(Math.floor(currentSqrtPrice * (1 + swapSlippage) * 1e6))) /
-        BigInt(1e6);
-      if (balance1 >= token1ToSwap) {
+      const token1ToSwap = shortfall0
+        .mul(
+          BigNumber.from(
+            Math.floor(currentSqrtPrice * (1 + swapSlippage) * 1e6)
+          )
+        )
+        .div(BigNumber.from(1e6));
+      if (balance1.gte(token1ToSwap)) {
         let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
         if (this.strategy.slippage) {
           slippage = (
@@ -379,16 +395,17 @@ export class LPExecutor
       }
     }
 
-    if (balance1 < amount1Desired) {
-      const shortfall1 = amount1Desired - balance1;
+    if (balance1.lt(amount1Desired)) {
+      const shortfall1 = amount1Desired.sub(balance1);
       // Need to swap token0 for token1 (add configured slippage)
-      const token0ToSwap =
-        (shortfall1 *
-          BigInt(
+      const token0ToSwap = shortfall1
+        .mul(
+          BigNumber.from(
             Math.floor((1 / (currentSqrtPrice * (1 + swapSlippage))) * 1e6)
-          )) /
-        BigInt(1e6);
-      if (balance0 >= token0ToSwap) {
+          )
+        )
+        .div(BigNumber.from(1e6));
+      if (balance0.gte(token0ToSwap)) {
         let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
         if (this.strategy.slippage) {
           slippage = (
@@ -417,15 +434,16 @@ export class LPExecutor
       token1Contract.balanceOf(wallet.address),
     ]);
 
-    if (finalBalance0 < amount0Desired || finalBalance1 < amount1Desired) {
+    if (finalBalance0.lt(amount0Desired) || finalBalance1.lt(amount1Desired)) {
       throw new Error('Insufficient balance after swaps');
     }
 
     // Approve with a buffer based on position slippage
-    const approvalBuffer =
-      BigInt(Math.floor((1 + positionSlippage) * 100)) / BigInt(100);
-    const amount0WithBuffer = amount0Desired * approvalBuffer;
-    const amount1WithBuffer = amount1Desired * approvalBuffer;
+    const approvalBuffer = BigNumber.from(
+      Math.floor((1 + positionSlippage) * 100)
+    ).div(BigNumber.from(100));
+    const amount0WithBuffer = amount0Desired.mul(approvalBuffer);
+    const amount1WithBuffer = amount1Desired.mul(approvalBuffer);
 
     await Promise.all([
       token0Contract.approve(POSITION_MANAGER_ADDRESS, amount0WithBuffer),
@@ -440,12 +458,12 @@ export class LPExecutor
       tickUpper,
       amount0Desired,
       amount1Desired,
-      amount0Min:
-        (amount0Desired * BigInt(Math.floor((1 - positionSlippage) * 100))) /
-        BigInt(100),
-      amount1Min:
-        (amount1Desired * BigInt(Math.floor((1 - positionSlippage) * 100))) /
-        BigInt(100),
+      amount0Min: amount0Desired
+        .mul(BigNumber.from(Math.floor((1 - positionSlippage) * 100)))
+        .div(BigNumber.from(100)),
+      amount1Min: amount1Desired
+        .mul(BigNumber.from(Math.floor((1 - positionSlippage) * 100)))
+        .div(BigNumber.from(100)),
       recipient: wallet.address,
       deadline: Math.floor(Date.now() / 1000) + 1800,
     };
@@ -561,8 +579,8 @@ export class LPExecutor
       this.strategy.autoCompound.minFeesForCompound,
       18
     );
-    // Compound if we have amount0 more than the minimum fees
-    return fees.amount0 >= minFees;
+    // Convert bigint to BigNumber for comparison
+    return BigNumber.from(fees.amount0).gte(minFees);
   }
 
   private async reinvestFees(
@@ -636,33 +654,6 @@ export class LPExecutor
         throw new Error(`Unsupported fee tier: ${fee}`);
     }
   }
-
-  // private async safeExecute<T>(
-  //   operation: () => Promise<T>,
-  //   errorMessage: string
-  // ): Promise<T | null> {
-  //   try {
-  //     return await operation();
-  //   } catch (error) {
-  //     this.log(`${errorMessage}: ${error}`);
-  //     return null;
-  //   }
-  // }
-
-  // public async execute(router: Contract, wallet: Wallet): Promise<void> {
-  //   const positionManager = new Contract(
-  //     POSITION_MANAGER_ADDRESS,
-  //     POSITION_MANAGER_ABI,
-  //     wallet
-  //   );
-
-  //   await this.safeExecute(async () => {
-  //     await this.monitor(positionManager, wallet);
-  //     if (this.strategy.autoCompound.enabled) {
-  //       await this.checkAndCompound(positionManager, wallet);
-  //     }
-  //   }, `Error executing LP strategy ${this.strategy.name}`);
-  // }
 
   public async stop(): Promise<void> {
     this.stopRequested = true;
@@ -776,35 +767,6 @@ export class LPExecutor
     const factory = new Contract(FACTORY_ADDRESS, FACTORY_ABI, wallet);
     return await factory.getPool(token0Address, token1Address, fee);
   }
-
-  // Add new helper function for swapping
-  // private async executeSwap(params: {
-  //   tokenIn: string;
-  //   tokenOut: string;
-  //   amountIn: bigint;
-  //   amountOutMinimum: bigint;
-  //   wallet: Wallet;
-  // }): Promise<void> {
-  //   const ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
-  //   const ROUTER_ABI = [
-  //     'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
-  //   ];
-
-  //   const router = new Contract(ROUTER_ADDRESS, ROUTER_ABI, params.wallet);
-
-  //   // Approve token spending
-  //   const tokenContract = new Contract(
-  //     params.tokenIn,
-  //     [
-  //       'function approve(address spender, uint256 amount) external returns (bool)',
-  //     ],
-  //     params.wallet
-  //   );
-  //   await tokenContract.approve(ROUTER_ADDRESS, params.amountIn);
-
-  //   const tx = await router.exactInputSingle(params);
-  //   await tx.wait();
-  // }
 
   public getName(): string {
     return this.strategy.name;
