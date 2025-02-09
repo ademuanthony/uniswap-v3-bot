@@ -33,37 +33,62 @@ export abstract class BaseStrategyExecutor {
     return { expectedAmountOut };
   }
 
-  protected async executeSwap(
-    router: Contract,
-    params: {
-      tokenIn: string;
-      tokenOut: string;
-      amountIn: bigint;
-      amountOutMinimum: bigint;
-      wallet: Wallet;
-    }
-  ) {
-    // Check token balance first
+  protected async executeSwap(params: {
+    tokenIn: string;
+    tokenOut: string;
+    amountIn: bigint;
+    slippage: number;
+    wallet: Wallet;
+  }) {
+    const ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
+    const ROUTER_ABI = [
+      'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
+    ];
+
+    const router = new Contract(ROUTER_ADDRESS, ROUTER_ABI, params.wallet);
+
+    // Check token balance and allowance
     const tokenContract = new Contract(
       params.tokenIn,
-      ['function balanceOf(address) view returns (uint256)'],
+      [
+        'function balanceOf(address) view returns (uint256)',
+        'function allowance(address,address) view returns (uint256)',
+      ],
       params.wallet
     );
 
-    const balance = await tokenContract.balanceOf(params.wallet.address);
+    const [balance, allowance] = await Promise.all([
+      tokenContract.balanceOf(params.wallet.address),
+      tokenContract.allowance(params.wallet.address, router.target),
+    ]);
+
     if (balance < params.amountIn) {
       throw new Error(
         `Insufficient balance for swap. Required: ${params.amountIn}, Available: ${balance}`
       );
     }
 
-    // Approve token spending
-    const approvalTx = await tokenContract.approve(
-      router.target,
-      params.amountIn
+    // Approve only if needed
+    if (allowance < params.amountIn) {
+      const approvalTx = await tokenContract.approve(
+        router.target,
+        params.amountIn
+      );
+      await approvalTx.wait();
+      this.log(`Token approval confirmed in block ${approvalTx.blockNumber}`);
+    }
+
+    // Get quote for amountOutMinimum calculation
+    const { expectedAmountOut } = await this.getQuote(
+      params.tokenIn,
+      params.tokenOut,
+      params.amountIn,
+      params.wallet
     );
-    await approvalTx.wait();
-    this.log(`Token approval confirmed in block ${approvalTx.blockNumber}`);
+
+    const amountOutMinimum =
+      (expectedAmountOut * BigInt(Math.floor((1 - params.slippage) * 10000))) /
+      BigInt(10000);
 
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
     const fee = 3000; // 0.3%
@@ -76,7 +101,7 @@ export abstract class BaseStrategyExecutor {
       recipient: params.wallet.address,
       deadline,
       amountIn: params.amountIn,
-      amountOutMinimum: params.amountOutMinimum,
+      amountOutMinimum: amountOutMinimum,
       sqrtPriceLimitX96,
     };
 

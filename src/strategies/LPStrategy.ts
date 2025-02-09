@@ -14,7 +14,7 @@ import * as path from 'path';
 import { LPStrategyStorage } from '../types/Storage';
 import { Web3Helper } from '../utils/web3';
 
-const POSITION_MANAGER_ADDRESS = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
+const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as string;
 const POSITION_MANAGER_ABI = [
   'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
   'function mint(tuple(address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)',
@@ -23,7 +23,7 @@ const POSITION_MANAGER_ABI = [
   'function decreaseLiquidity(tuple(uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external payable returns (uint256 amount0, uint256 amount1)',
 ];
 
-const FACTORY_ADDRESS = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
+const FACTORY_ADDRESS = process.env.FACTORY_ADDRESS as string;
 const FACTORY_ABI = [
   'function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)',
 ];
@@ -106,34 +106,48 @@ export class LPExecutor
 
   private async loadPositions() {
     try {
-      if (fs.existsSync(this.storageFile)) {
-        const data = await fs.promises.readFile(this.storageFile, 'utf8');
-        const storage: LPStrategyStorage = JSON.parse(data);
+      if (!fs.existsSync(this.storageFile)) {
+        this.log('No existing positions found. Starting fresh.');
+        return;
+      }
 
-        for (const [tokenId, posData] of Object.entries(storage.positions)) {
-          this.positions.set(Number(tokenId), {
-            tokenId: Number(tokenId),
-            entryPrice: BigInt(posData.entryPrice),
-            liquidity: BigInt(posData.liquidity),
-            amount0: BigInt(posData.token0Balance),
-            amount1: BigInt(posData.token1Balance),
-            token0: '',
-            token1: '',
-            fee: 0,
-            feeGrowthInside0LastX128: BigInt(0),
-            feeGrowthInside1LastX128: BigInt(0),
-            tokensOwed0: BigInt(0),
-            tokensOwed1: BigInt(0),
-            inRange: false,
-            tickLower: posData.tickLower,
-            tickUpper: posData.tickUpper,
-            lastCompounded: posData.lastCompounded,
-            timestamp: posData.timestamp,
-          });
-        }
+      const data = await fs.promises.readFile(this.storageFile, 'utf8');
+      if (!data || data.trim() === '') {
+        this.log('Storage file is empty. Starting fresh.');
+        return;
+      }
+
+      const storage: LPStrategyStorage = JSON.parse(data);
+      if (!storage.positions) {
+        this.log('No positions in storage. Starting fresh.');
+        return;
+      }
+
+      for (const [tokenId, posData] of Object.entries(storage.positions)) {
+        this.positions.set(Number(tokenId), {
+          tokenId: Number(tokenId),
+          entryPrice: BigInt(posData.entryPrice),
+          liquidity: BigInt(posData.liquidity),
+          amount0: BigInt(posData.token0Balance),
+          amount1: BigInt(posData.token1Balance),
+          token0: '',
+          token1: '',
+          fee: 0,
+          feeGrowthInside0LastX128: BigInt(0),
+          feeGrowthInside1LastX128: BigInt(0),
+          tokensOwed0: BigInt(0),
+          tokensOwed1: BigInt(0),
+          inRange: false,
+          tickLower: posData.tickLower,
+          tickUpper: posData.tickUpper,
+          lastCompounded: posData.lastCompounded,
+          timestamp: posData.timestamp,
+        });
       }
     } catch (error) {
       this.log(`Error loading LP positions: ${error}`);
+      // Initialize with empty positions
+      this.positions = new Map();
     }
   }
 
@@ -149,6 +163,19 @@ export class LPExecutor
 
     this._isRunning = true;
     this.stopRequested = false;
+
+    // Create initial position if none exist
+    if (this.positions.size === 0) {
+      this.log('No positions found. Creating initial position...');
+      try {
+        await this.createPosition(positionManager, wallet);
+        this.log('Initial position created successfully');
+      } catch (error) {
+        this.log(`Error creating initial position: ${error}`);
+        this.stop();
+        return;
+      }
+    }
 
     while (this._isRunning && !this.stopRequested) {
       try {
@@ -228,10 +255,7 @@ export class LPExecutor
     positionManager: Contract,
     wallet: Wallet
   ): Promise<void> {
-    const [token0Decimals, token1Decimals] = await Promise.all([
-      getTokenDecimals(this.strategy.token0, wallet),
-      getTokenDecimals(this.strategy.token1, wallet),
-    ]);
+    const token0Decimals = await getTokenDecimals(this.strategy.token0, wallet);
 
     const pool = await this.getPool(
       this.strategy.token0,
@@ -333,13 +357,23 @@ export class LPExecutor
           BigInt(Math.floor(currentSqrtPrice * (1 + swapSlippage) * 1e6))) /
         BigInt(1e6);
       if (balance1 >= token1ToSwap) {
-        await this.swapExactInputSingle(
-          this.strategy.token1,
-          this.strategy.token0,
-          token1ToSwap,
+        let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
+        if (this.strategy.slippage) {
+          slippage = (
+            this.strategy.slippage as {
+              swap: number;
+              position: number;
+            }
+          ).swap;
+        }
+
+        await this.executeSwap({
+          tokenIn: this.strategy.token1,
+          tokenOut: this.strategy.token0,
+          amountIn: token1ToSwap,
+          slippage,
           wallet,
-          swapSlippage
-        );
+        });
       } else {
         throw new Error('Insufficient token1 balance for required token0 swap');
       }
@@ -355,13 +389,23 @@ export class LPExecutor
           )) /
         BigInt(1e6);
       if (balance0 >= token0ToSwap) {
-        await this.swapExactInputSingle(
-          this.strategy.token0,
-          this.strategy.token1,
-          token0ToSwap,
+        let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
+        if (this.strategy.slippage) {
+          slippage = (
+            this.strategy.slippage as {
+              swap: number;
+              position: number;
+            }
+          ).swap;
+        }
+
+        await this.executeSwap({
+          tokenIn: this.strategy.token0,
+          tokenOut: this.strategy.token1,
+          amountIn: token0ToSwap,
+          slippage,
           wallet,
-          swapSlippage
-        );
+        });
       } else {
         throw new Error('Insufficient token0 balance for required token1 swap');
       }
@@ -593,32 +637,32 @@ export class LPExecutor
     }
   }
 
-  private async safeExecute<T>(
-    operation: () => Promise<T>,
-    errorMessage: string
-  ): Promise<T | null> {
-    try {
-      return await operation();
-    } catch (error) {
-      this.log(`${errorMessage}: ${error}`);
-      return null;
-    }
-  }
+  // private async safeExecute<T>(
+  //   operation: () => Promise<T>,
+  //   errorMessage: string
+  // ): Promise<T | null> {
+  //   try {
+  //     return await operation();
+  //   } catch (error) {
+  //     this.log(`${errorMessage}: ${error}`);
+  //     return null;
+  //   }
+  // }
 
-  public async execute(router: Contract, wallet: Wallet): Promise<void> {
-    const positionManager = new Contract(
-      POSITION_MANAGER_ADDRESS,
-      POSITION_MANAGER_ABI,
-      wallet
-    );
+  // public async execute(router: Contract, wallet: Wallet): Promise<void> {
+  //   const positionManager = new Contract(
+  //     POSITION_MANAGER_ADDRESS,
+  //     POSITION_MANAGER_ABI,
+  //     wallet
+  //   );
 
-    await this.safeExecute(async () => {
-      await this.monitor(positionManager, wallet);
-      if (this.strategy.autoCompound.enabled) {
-        await this.checkAndCompound(positionManager, wallet);
-      }
-    }, `Error executing LP strategy ${this.strategy.name}`);
-  }
+  //   await this.safeExecute(async () => {
+  //     await this.monitor(positionManager, wallet);
+  //     if (this.strategy.autoCompound.enabled) {
+  //       await this.checkAndCompound(positionManager, wallet);
+  //     }
+  //   }, `Error executing LP strategy ${this.strategy.name}`);
+  // }
 
   public async stop(): Promise<void> {
     this.stopRequested = true;
@@ -640,8 +684,6 @@ export class LPExecutor
     if (this.poolCache.has(cacheKey)) {
       return this.poolCache.get(cacheKey)!;
     }
-
-    const factory = new Contract(FACTORY_ADDRESS, FACTORY_ABI, wallet);
 
     const [token0Decimals, token1Decimals] = await Promise.all([
       getTokenDecimals(token0Address, wallet),
@@ -736,49 +778,33 @@ export class LPExecutor
   }
 
   // Add new helper function for swapping
-  private async swapExactInputSingle(
-    tokenIn: string,
-    tokenOut: string,
-    amountIn: bigint,
-    wallet: Wallet,
-    slippage: number
-  ): Promise<void> {
-    const SWAP_ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
-    const SWAP_ROUTER_ABI = [
-      'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
-    ];
+  // private async executeSwap(params: {
+  //   tokenIn: string;
+  //   tokenOut: string;
+  //   amountIn: bigint;
+  //   amountOutMinimum: bigint;
+  //   wallet: Wallet;
+  // }): Promise<void> {
+  //   const ROUTER_ADDRESS = '0xE592427A0AEce92De3Edee1F18E0157C05861564';
+  //   const ROUTER_ABI = [
+  //     'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
+  //   ];
 
-    const swapRouter = new Contract(
-      SWAP_ROUTER_ADDRESS,
-      SWAP_ROUTER_ABI,
-      wallet
-    );
+  //   const router = new Contract(ROUTER_ADDRESS, ROUTER_ABI, params.wallet);
 
-    // Approve token spending
-    const tokenContract = new Contract(
-      tokenIn,
-      [
-        'function approve(address spender, uint256 amount) external returns (bool)',
-      ],
-      wallet
-    );
-    await tokenContract.approve(SWAP_ROUTER_ADDRESS, amountIn);
+  //   // Approve token spending
+  //   const tokenContract = new Contract(
+  //     params.tokenIn,
+  //     [
+  //       'function approve(address spender, uint256 amount) external returns (bool)',
+  //     ],
+  //     params.wallet
+  //   );
+  //   await tokenContract.approve(ROUTER_ADDRESS, params.amountIn);
 
-    const params = {
-      tokenIn,
-      tokenOut,
-      fee: this.strategy.fee,
-      recipient: wallet.address,
-      deadline: Math.floor(Date.now() / 1000) + 1800,
-      amountIn,
-      amountOutMinimum:
-        (amountIn * BigInt(Math.floor((1 - slippage) * 100))) / BigInt(100), // Calculate minimum based on slippage
-      sqrtPriceLimitX96: 0,
-    };
-
-    const tx = await swapRouter.exactInputSingle(params);
-    await tx.wait();
-  }
+  //   const tx = await router.exactInputSingle(params);
+  //   await tx.wait();
+  // }
 
   public getName(): string {
     return this.strategy.name;

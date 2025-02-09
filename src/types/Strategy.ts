@@ -31,7 +31,6 @@ export interface Config {
 }
 
 export interface StrategyExecutor {
-  execute(router: Contract, wallet: Wallet): Promise<void>;
   start(): Promise<void>;
   stop(): void;
   isRunning(): boolean;

@@ -1,7 +1,7 @@
 import { Contract, Wallet, parseUnits } from 'ethers';
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
-import { getTokenDecimals, approveToken } from '../utils/tokenUtils';
+import { getTokenDecimals } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 import { Web3Helper } from '../utils/web3';
@@ -29,12 +29,11 @@ export class DCAExecutor
     if (this._isRunning) return;
 
     const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
-    const router = Web3Helper.getRouter(wallet);
 
     this._isRunning = true;
     this.interval = setInterval(async () => {
       try {
-        await this.execute(router, wallet);
+        await this.execute(wallet);
       } catch (error) {
         this.log(`Error in DCA strategy ${this.strategy.name}: ${error}`);
       }
@@ -53,31 +52,18 @@ export class DCAExecutor
     return this._isRunning;
   }
 
-  async execute(router: Contract, wallet: Wallet): Promise<void> {
+  async execute(wallet: Wallet): Promise<void> {
     const tokenIn = tokenAddresses[this.strategy.base_token.toUpperCase()];
     const tokenOut = tokenAddresses[this.strategy.quote_token.toUpperCase()];
     const tokenInDecimals = await getTokenDecimals(tokenIn, wallet);
     const amountIn = parseUnits(this.strategy.amount, tokenInDecimals);
 
-    const { expectedAmountOut } = await this.getQuote(
-      tokenIn,
-      tokenOut,
-      amountIn,
-      wallet
-    );
-
     const slippage = this.strategy.slippage ?? DEFAULT_SLIPPAGE.DCA;
-    const amountOutMinimum =
-      (expectedAmountOut * BigInt(Math.floor((1 - slippage) * 10000))) /
-      BigInt(10000);
-
-    await approveToken(tokenIn, router.target.toString(), amountIn, wallet);
-
-    await this.executeSwap(router, {
+    await this.executeSwap({
       tokenIn,
       tokenOut,
       amountIn,
-      amountOutMinimum,
+      slippage,
       wallet,
     });
   }

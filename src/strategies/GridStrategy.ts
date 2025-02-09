@@ -1,7 +1,7 @@
 import { Contract, Wallet, parseUnits } from 'ethers';
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
-import { getTokenDecimals, approveToken } from '../utils/tokenUtils';
+import { getTokenDecimals } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 import { Web3Helper } from '../utils/web3';
@@ -53,14 +53,13 @@ export class GridExecutor
     if (this._isRunning) return;
 
     const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
-    const router = Web3Helper.getRouter(wallet);
 
     this._isRunning = true;
     this.stopRequested = false;
 
     while (this._isRunning && !this.stopRequested) {
       try {
-        await this.execute(router, wallet);
+        await this.execute(wallet);
         await new Promise((resolve) =>
           setTimeout(resolve, this.strategy.interval * 1000)
         );
@@ -79,13 +78,12 @@ export class GridExecutor
     return this._isRunning;
   }
 
-  async execute(router: Contract, wallet: Wallet): Promise<void> {
-    await this.checkAndUpdatePositions(router, wallet);
-    await this.openNewPositionsIfNeeded(router, wallet);
+  async execute(wallet: Wallet): Promise<void> {
+    await this.checkAndUpdatePositions(wallet);
+    await this.openNewPositionsIfNeeded(wallet);
   }
 
   private async checkAndUpdatePositions(
-    router: Contract,
     wallet: Wallet
   ): Promise<void> {
     for (const position of [...this.positions]) {
@@ -93,21 +91,20 @@ export class GridExecutor
 
       // Check profit targets
       if (currentPrice >= position.profitTarget) {
-        await this.closePosition(position, router, wallet);
+        await this.closePosition(position, wallet);
         this.positions = this.positions.filter((p) => p !== position);
         continue;
       }
 
       // Check stop loss
       if (currentPrice <= position.stopLoss) {
-        await this.closePosition(position, router, wallet);
+        await this.closePosition(position, wallet);
         this.positions = this.positions.filter((p) => p !== position);
       }
     }
   }
 
   private async openNewPositionsIfNeeded(
-    router: Contract,
     wallet: Wallet
   ): Promise<void> {
     if (this.positions.length >= this.strategy.maxPositions) {
@@ -144,7 +141,7 @@ export class GridExecutor
           BigInt(10000);
 
       if (this.positions.length < this.strategy.maxPositions) {
-        await this.openPosition(targetPrice, router, wallet);
+        await this.openPosition(targetPrice, wallet);
       }
     }
   }
@@ -167,7 +164,6 @@ export class GridExecutor
 
   private async openPosition(
     targetPrice: bigint,
-    router: Contract,
     wallet: Wallet
   ): Promise<void> {
     const quoteToken = tokenAddresses[this.strategy.quote_token.toUpperCase()];
@@ -177,14 +173,16 @@ export class GridExecutor
       await getTokenDecimals(quoteToken, wallet)
     );
 
-    await this.executeSwap(router, {
+    let slippage = DEFAULT_SLIPPAGE.GRID_ENTRY;
+    if (!isNaN(this.strategy.slippage as number)) {
+      slippage = this.strategy.slippage as number;
+    }
+
+    await this.executeSwap({
       tokenIn: quoteToken,
       tokenOut: baseToken,
       amountIn: amount,
-      amountOutMinimum:
-        (amount *
-          BigInt(Math.floor((1 - DEFAULT_SLIPPAGE.GRID_ENTRY) * 10000))) /
-        BigInt(10000),
+      slippage,
       wallet,
     });
 
@@ -209,20 +207,21 @@ export class GridExecutor
 
   private async closePosition(
     position: GridPosition,
-    router: Contract,
     wallet: Wallet
   ): Promise<void> {
     const baseToken = tokenAddresses[this.strategy.base_token.toUpperCase()];
     const quoteToken = tokenAddresses[this.strategy.quote_token.toUpperCase()];
 
-    await this.executeSwap(router, {
+    let slippage = DEFAULT_SLIPPAGE.GRID_PROFIT;
+    if (!isNaN(this.strategy.slippage as number)) {
+      slippage = this.strategy.slippage as number;
+    }
+
+    await this.executeSwap({
       tokenIn: baseToken,
       tokenOut: quoteToken,
       amountIn: position.amount,
-      amountOutMinimum:
-        (position.amount *
-          BigInt(Math.floor((1 - DEFAULT_SLIPPAGE.GRID_PROFIT) * 10000))) /
-        BigInt(10000),
+      slippage: DEFAULT_SLIPPAGE.GRID_PROFIT,
       wallet,
     });
 

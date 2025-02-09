@@ -1,5 +1,3 @@
-import { Strategy } from '../types/Strategy';
-
 export abstract class BaseStrategy {
   protected _isRunning: boolean = false;
   protected stopRequested: boolean = false;
