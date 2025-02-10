@@ -7,6 +7,8 @@ import { CLIManager } from './cli/CLIManager';
 import { LPExecutor } from './strategies/LPStrategy';
 import dotenv from 'dotenv';
 import { Logger } from './utils/logger';
+import { BTCBridgeExecutor } from './strategies/BTCBridgeStrategy';
+import { BTCBridgeStrategy } from './strategies/BTCBridgeStrategy';
 
 dotenv.config();
 
@@ -68,6 +70,17 @@ function createExecutor(strategy: Strategy) {
         return new LPExecutor(strategy as LPStrategy);
       }
       throw new Error('Invalid LP strategy configuration');
+    }
+    case 'btc-bridge': {
+      if (
+        'amount' in strategy &&
+        'interval' in strategy &&
+        'btcFeeRate' in strategy &&
+        'privateKeyEnvKey' in strategy
+      ) {
+        return new BTCBridgeExecutor(strategy as BTCBridgeStrategy);
+      }
+      throw new Error('Invalid BTC Bridge strategy configuration');
     }
     default:
       throw new Error(`Unknown strategy type: ${strategy.type}`);
