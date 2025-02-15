@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import { Logger } from './utils/logger';
 import { BTCBridgeExecutor } from './strategies/BTCBridgeStrategy';
 import { BTCBridgeStrategy } from './strategies/BTCBridgeStrategy';
+import { Wallet } from 'ethers';
 
 dotenv.config();
 
@@ -90,6 +91,12 @@ function createExecutor(strategy: Strategy) {
 async function main() {
   const cli = new CLIManager();
   try {
+    // const pk = process.env['PRIVATE_KEY'];
+    // const wallet = new Wallet(pk as string);
+
+    // console.log(wallet.address);
+    // if (wallet) process.exit(0);
+
     const config = await loadConfig('config.json');
     Logger.setLogger(cli); // Set global logger
 

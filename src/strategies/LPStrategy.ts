@@ -780,7 +780,7 @@ export class LPExecutor
     return this.strategy.key;
   }
 
-  public getDisplayInfo(): string[] {
+  public async getDisplayInfo(): Promise<string[]> {
     return [
       `Type: Liquidity Pool`,
       `Pool: ${this.strategy.token0Symbol}-${this.strategy.token1Symbol}`,

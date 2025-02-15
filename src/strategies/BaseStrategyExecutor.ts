@@ -1,5 +1,12 @@
 import { Contract, Wallet, BigNumber } from 'ethers';
 import { Logger } from '../utils/logger';
+import {
+  encodeRouterPath,
+  encodeUniversalRouterInput,
+} from '../utils/routerEncoding';
+import { UNIVERSAL_ROUTER_ADDRESS } from '../utils/web3';
+import poolAbi from '../abis/pool';
+import erc20Abi from '../abis/erc20Abi';
 
 export abstract class BaseStrategyExecutor {
   setLogger(logger: { log: (message: string) => void }) {
@@ -16,18 +23,13 @@ export abstract class BaseStrategyExecutor {
     amountIn: BigNumber,
     wallet: Wallet
   ) {
-    const quoterAddress = '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6';
-    const quoterAbi = [
-      'function quoteExactInputSingle(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint160 sqrtPriceLimitX96) external returns (uint256 amountOut)',
-    ];
-
-    const quoter = new Contract(quoterAddress, quoterAbi, wallet);
-    const expectedAmountOut = await quoter.quoteExactInputSingle(
+    const { expectedAmountOut } = await this.getUniversalRouterQuote(
       tokenIn,
       tokenOut,
-      3000, // fee tier
       amountIn,
-      0 // no price limit
+      0,
+      3000,
+      wallet
     );
 
     return { expectedAmountOut };
@@ -40,20 +42,29 @@ export abstract class BaseStrategyExecutor {
     slippage: number;
     wallet: Wallet;
   }) {
-    const ROUTER_ADDRESS = process.env.ROUTER_ADDRESS as string;
-    const ROUTER_ABI = [
-      'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
+    const network = 'sepolia';
+    const UNIVERSAL_ROUTER = UNIVERSAL_ROUTER_ADDRESS[network];
+
+    this.log(
+      `Swapping ${params.amountIn.toString()} of token ${params.tokenIn}`
+    );
+    this.log(`To token ${params.tokenOut} with slippage ${params.slippage}`);
+    this.log(`Using Universal Router at ${UNIVERSAL_ROUTER}`);
+
+    const UNIVERSAL_ROUTER_ABI = [
+      'function execute(bytes commands, bytes[] inputs, uint256 deadline) payable returns ()',
     ];
 
-    const router = new Contract(ROUTER_ADDRESS, ROUTER_ABI, params.wallet);
+    const router = new Contract(
+      UNIVERSAL_ROUTER,
+      UNIVERSAL_ROUTER_ABI,
+      params.wallet
+    );
 
     // Check token balance and allowance
     const tokenContract = new Contract(
       params.tokenIn,
-      [
-        'function balanceOf(address) view returns (uint256)',
-        'function allowance(address,address) view returns (uint256)',
-      ],
+      erc20Abi,
       params.wallet
     );
 
@@ -61,6 +72,9 @@ export abstract class BaseStrategyExecutor {
       tokenContract.balanceOf(params.wallet.address),
       tokenContract.allowance(params.wallet.address, router.address),
     ]);
+
+    this.log(`Balance: ${balance.toString()}`);
+    this.log(`Allowance: ${allowance.toString()}`);
 
     if (balance.lt(params.amountIn)) {
       throw new Error(
@@ -70,45 +84,133 @@ export abstract class BaseStrategyExecutor {
 
     // Approve only if needed
     if (allowance.lt(params.amountIn)) {
+      this.log(
+        `Approving Universal Router to spend ${params.amountIn.toString()}`
+      );
       const approvalTx = await tokenContract.approve(
         router.address,
         params.amountIn
       );
       await approvalTx.wait();
-      this.log(`Token approval confirmed in block ${approvalTx.blockNumber}`);
+      this.log('Approval confirmed');
     }
 
-    // Get quote for amountOutMinimum calculation
-    const { expectedAmountOut } = await this.getQuote(
+    // Get quote and encode swap data
+    const { expectedAmountOut, swapData } = await this.getUniversalRouterQuote(
       params.tokenIn,
       params.tokenOut,
       params.amountIn,
+      params.slippage,
+      3000,
       params.wallet
     );
 
-    const amountOutMinimum = expectedAmountOut
-      .mul(BigNumber.from(Math.floor((1 - params.slippage) * 10000)))
-      .div(10000);
+    this.log(`Expected amount out: ${expectedAmountOut.toString()} wei`);
 
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
-    const fee = 3000; // 0.3%
-    const sqrtPriceLimitX96 = 0; // no price limit
 
-    const swapParams = {
-      tokenIn: params.tokenIn,
-      tokenOut: params.tokenOut,
-      fee,
-      recipient: params.wallet.address,
+    const tx = await router.execute(
+      swapData.commands,
+      swapData.inputs,
       deadline,
-      amountIn: params.amountIn,
-      amountOutMinimum: amountOutMinimum,
-      sqrtPriceLimitX96,
-    };
+      { gasLimit: 300000 }
+    );
 
-    const tx = await router.exactInputSingle(swapParams, { gasLimit: 300000 });
     this.log(`Transaction submitted: ${tx.hash}`);
     const receipt = await tx.wait();
     this.log(`Transaction confirmed in block ${receipt.blockNumber}`);
     return receipt;
+  }
+
+  private async getQuoteFromPool(
+    tokenIn: string,
+    tokenOut: string,
+    amountIn: BigNumber,
+    fee: number,
+    wallet: Wallet
+  ): Promise<BigNumber> {
+    const poolFactory = new Contract(
+      process.env.FACTORY_ADDRESS as string,
+      [
+        'function getPool(address tokenA, address tokenB, uint24 fee) view returns (address pool)',
+      ],
+      wallet
+    );
+
+    const pool = await poolFactory.getPool(tokenIn, tokenOut, fee);
+    const poolContract = new Contract(
+      pool,
+      poolAbi,
+      wallet
+    );
+
+    // Get current price from slot0
+    const slot0 = await poolContract.slot0();
+    const sqrtPriceX96 = slot0.sqrtPriceX96;
+
+    // Calculate price from sqrtPriceX96
+    const price = (Number(sqrtPriceX96) / 2 ** 96) ** 2;
+
+    // Calculate expected output
+    // For token0 -> token1: amountOut = amountIn * price
+    // Calculate expected output
+    // For token0 -> token1: amountOut = amountIn * price
+    // For token1 -> token0: amountOut = amountIn / price
+    const isToken0ToToken1 = tokenIn.toLowerCase() < tokenOut.toLowerCase();
+
+    let expectedAmountOut: BigNumber;
+    if (isToken0ToToken1) {
+      expectedAmountOut = amountIn
+        .mul(BigNumber.from(Math.floor(price * 1e6)))
+        .div(1e6);
+    } else {
+      expectedAmountOut = amountIn
+        .mul(1e6)
+        .div(BigNumber.from(Math.floor(price * 1e6)));
+    }
+
+    this.log(`Expected amount out from pool: ${expectedAmountOut.toString()}`);
+
+    return expectedAmountOut;
+  }
+
+  private async getUniversalRouterQuote(
+    tokenIn: string,
+    tokenOut: string,
+    amountIn: BigNumber,
+    slippage: number,
+    fee: number,
+    wallet: Wallet
+  ) {
+    // Get quote first
+    const expectedAmountOut = await this.getQuoteFromPool(
+      tokenIn,
+      tokenOut,
+      amountIn,
+      fee,
+      wallet
+    );
+
+    const minAmountOut = expectedAmountOut
+      .mul(BigNumber.from(Math.floor((1 - slippage) * 10000)))
+      .div(10000);
+
+    // Encode path and inputs
+    const path = encodeRouterPath([tokenIn, tokenOut], [3000]);
+
+    const inputs = encodeUniversalRouterInput({
+      path,
+      recipient: wallet.address,
+      amountIn,
+      minAmountOut,
+    });
+
+    return {
+      expectedAmountOut,
+      swapData: {
+        commands: '0x01', // V3_SWAP_EXACT_IN command
+        inputs: [inputs],
+      },
+    };
   }
 }

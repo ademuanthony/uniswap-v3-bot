@@ -11,6 +11,11 @@ export async function getTokenDecimals(tokenAddress: string, wallet: Wallet): Pr
   return await tokenContract.decimals();
 }
 
+export async function getTokenBalance(tokenAddress: string, wallet: Wallet): Promise<bigint> {
+  const tokenContract = new Contract(tokenAddress, erc20Abi, wallet);
+  return await tokenContract.balanceOf(wallet.address);
+}
+
 export async function approveToken(
   tokenAddress: string,
   spender: string,

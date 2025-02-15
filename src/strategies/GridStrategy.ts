@@ -29,11 +29,11 @@ export interface GridStrategy extends BaseStrategy {
 }
 
 interface GridPosition {
-  entryPrice: bigint;
+  entryPrice: BigNumber;
   amount: BigNumber;
   timestamp: number;
-  profitTarget: bigint;
-  stopLoss: bigint;
+  profitTarget: BigNumber;
+  stopLoss: BigNumber;
 }
 
 export class GridExecutor
@@ -132,10 +132,9 @@ export class GridExecutor
 
     // Continue with entry logic if balance is sufficient
     for (const entry of this.strategy.entries) {
-      const targetPrice =
-        currentPrice -
-        (currentPrice * BigInt(Math.floor(entry.priceChange * 100))) /
-          BigInt(10000);
+      const targetPrice = currentPrice.sub(
+        currentPrice.mul(Math.floor(entry.priceChange * 100)).div(10000)
+      );
 
       if (this.positions.length < this.strategy.maxPositions) {
         await this.openPosition(targetPrice, wallet);
@@ -143,7 +142,7 @@ export class GridExecutor
     }
   }
 
-  private async getCurrentPrice(wallet: Wallet): Promise<bigint> {
+  private async getCurrentPrice(wallet: Wallet): Promise<BigNumber> {
     const quoteToken = tokenAddresses[this.strategy.quote_token.toUpperCase()];
     const baseToken = tokenAddresses[this.strategy.base_token.toUpperCase()];
     const quoteDecimals = await getTokenDecimals(quoteToken, wallet);
@@ -160,7 +159,7 @@ export class GridExecutor
   }
 
   private async openPosition(
-    targetPrice: bigint,
+    targetPrice: BigNumber,
     wallet: Wallet
   ): Promise<void> {
     const quoteToken = tokenAddresses[this.strategy.quote_token.toUpperCase()];
@@ -189,12 +188,10 @@ export class GridExecutor
       timestamp: Date.now(),
       profitTarget: BigNumber.from(targetPrice)
         .mul(100 + Math.floor(this.strategy.profitTaking.targets[0] * 100))
-        .div(100)
-        .toBigInt(),
+        .div(100),
       stopLoss: BigNumber.from(targetPrice)
         .mul(100 - Math.floor(this.strategy.stopLoss.target * 100))
-        .div(100)
-        .toBigInt(),
+        .div(100),
     });
 
     this.log(`Opening position at price ${targetPrice}`);
@@ -251,12 +248,14 @@ export class GridExecutor
     return this.strategy.key;
   }
 
-  public getDisplayInfo(): string[] {
+  public async getDisplayInfo(): Promise<string[]> {
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     return [
       `Type: Grid Trading`,
       `Size: ${this.strategy.totalSize} ${this.strategy.quote_token}`,
       `Active Positions: ${this.positions.length}/${this.strategy.maxPositions}`,
       `Profit Targets: ${this.strategy.profitTaking.targets.join(', ')}%`,
+      `Wallet: ${wallet.address}`,
     ];
   }
 

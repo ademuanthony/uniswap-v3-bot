@@ -45,6 +45,7 @@ export class CLIManager {
       tags: true,
       keys: true,
       vi: true,
+      clickable: true,
       mouse: true,
       scrollback: 100,
       scrollbar: {
@@ -154,7 +155,7 @@ export class CLIManager {
     this.updateStatePanel();
   }
 
-  private updateStatePanel(): void {
+  private async updateStatePanel(): Promise<void> {
     let content = '';
     for (const [key, strategy] of this.strategies) {
       const state = this.strategyStates.get(key);
@@ -163,7 +164,7 @@ export class CLIManager {
       content += `{bold}${state.name}{/bold}\n`;
       content += `Status: ${state.status}\n`;
 
-      const displayInfo = strategy.getDisplayInfo();
+      const displayInfo = await strategy.getDisplayInfo();
       displayInfo.forEach((line) => {
         content += `${line}\n`;
       });

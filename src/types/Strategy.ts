@@ -38,7 +38,7 @@ export interface StrategyExecutor {
   getWalletPrivateKey(): string;
   getKey(): string;
   getStatus(): Promise<any>;
-  getDisplayInfo(): string[];
+  getDisplayInfo(): Promise<string[]>;
   handleCommand(action: string, args: string[]): Promise<string>;
   setLogger(logger: { log: (message: string) => void }): void;
 }
