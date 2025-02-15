@@ -80,6 +80,7 @@ export class GridExecutor
   }
 
   async execute(wallet: Wallet): Promise<void> {
+    this.log(`Executing Grid strategy ${this.strategy.name}`);
     await this.checkAndUpdatePositions(wallet);
     await this.openNewPositionsIfNeeded(wallet);
   }
@@ -122,10 +123,10 @@ export class GridExecutor
     const requiredAmount = parseUnits(this.strategy.totalSize, quoteDecimals);
     const balance = await tokenContract.balanceOf(wallet.address);
 
-    if (balance < requiredAmount) {
+    if (balance.lt(requiredAmount)) {
       this.log(
         `Insufficient ${this.strategy.quote_token} balance for grid entry. ` +
-          `Required: ${this.strategy.totalSize}, Available: ${balance}`
+          `Required: ${requiredAmount}, Available: ${balance}`
       );
       return;
     }

@@ -8,6 +8,8 @@ import { Web3Helper } from '../utils/web3';
 import poolAbi from '../abis/pool';
 import erc20Abi from '../abis/erc20Abi';
 import quoterAbi from '../abis/quoter';
+import { getTokenDecimals } from '../utils/tokenUtils';
+import { formatUnits } from 'ethers/lib/utils';
 
 export abstract class BaseStrategyExecutor {
   setLogger(logger: { log: (message: string) => void }) {
@@ -46,8 +48,10 @@ export abstract class BaseStrategyExecutor {
     wallet: Wallet;
   }) {
 
+    const token0Decimals = await getTokenDecimals(params.tokenIn, params.wallet);
+
     this.log(
-      `Swapping ${params.amountIn.toString()} of token ${params.tokenIn}`
+      `Swapping ${formatUnits(params.amountIn, token0Decimals)} of token ${params.tokenIn}`
     );
     this.log(`To token ${params.tokenOut} with slippage ${params.slippage}`);
 

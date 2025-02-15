@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LPStrategyStorage } from '../types/Storage';
 import { Web3Helper } from '../utils/web3';
-import { parseUnits } from 'ethers/lib/utils';
+import { formatUnits, parseUnits } from 'ethers/lib/utils';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -158,15 +158,12 @@ export class LPExecutor
   async start(): Promise<void> {
     if (this._isRunning) return;
 
-    console.log('POSITION_MANAGER_ADDRESS', POSITION_MANAGER_ADDRESS);
-
     const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     const positionManager = new Contract(
       POSITION_MANAGER_ADDRESS,
       POSITION_MANAGER_ABI,
       wallet
     );
-
 
     this._isRunning = true;
     this.stopRequested = false;
@@ -263,6 +260,9 @@ export class LPExecutor
     wallet: Wallet
   ): Promise<void> {
     const token0Decimals = await getTokenDecimals(this.strategy.token0, wallet);
+    const token1Decimals = await getTokenDecimals(this.strategy.token1, wallet);
+    this.log(`Token0 decimals: ${token0Decimals}`);
+    this.log(`Token1 decimals: ${token1Decimals}`);
 
     const pool = await this.getPool(
       this.strategy.token0,
@@ -271,72 +271,41 @@ export class LPExecutor
       wallet
     );
 
-    // Calculate tick range if not provided
-    const { tickLower, tickUpper } = this.strategy.initialTickLower
-      ? {
-          tickLower: this.strategy.initialTickLower,
-          tickUpper: this.strategy.initialTickUpper!,
-        }
-      : await this.calculateOptimalTickRange(pool, pool.tickCurrent, wallet);
-
-    // Get current sqrt price
-    const poolContract = new Contract(
-      await this.getPoolAddress(
-        this.strategy.token0,
-        this.strategy.token1,
-        this.strategy.fee,
-        wallet
-      ),
-      POOL_ABI,
+    // Calculate tick range based on current price and configured bounds
+    const { tickLower, tickUpper } = await this.calculateOptimalTickRange(
+      pool,
+      0,
       wallet
     );
-    const { sqrtPriceX96 } = await poolContract.slot0();
 
-    // Calculate optimal amounts based on price range
-    const sqrtRatioA = Math.sqrt(1.0001 ** tickLower);
-    const sqrtRatioB = Math.sqrt(1.0001 ** tickUpper);
-    const currentSqrtPrice = Number(sqrtPriceX96) / 2 ** 96;
+    // Parse amounts with proper decimals
+    const amount0Desired = parseUnits(
+      this.strategy.amount0Desired,
+      token0Decimals
+    );
+    const amount1Desired = parseUnits(
+      this.strategy.amount1Desired,
+      token1Decimals
+    );
 
-    // Total value to invest (in terms of token0)
-    const totalValue = parseUnits(this.strategy.amount0Desired, token0Decimals);
-
-    let amount0Desired: BigNumber;
-    let amount1Desired: BigNumber;
-
-    if (currentSqrtPrice <= sqrtRatioA) {
-      // Price is below range - only token0 needed
-      amount0Desired = BigNumber.from(totalValue);
-      amount1Desired = BigNumber.from(0);
-    } else if (currentSqrtPrice >= sqrtRatioB) {
-      // Price is above range - only token1 needed
-      amount0Desired = BigNumber.from(0);
-      amount1Desired = BigNumber.from(totalValue)
-        .mul(BigNumber.from(Math.floor(currentSqrtPrice ** 2 * 1e6)))
-        .div(BigNumber.from(1e6));
-    } else {
-      // Price is in range - need both tokens
-      const token0Portion =
-        (sqrtRatioB - currentSqrtPrice) / (sqrtRatioB - sqrtRatioA);
-      const token1Portion =
-        (currentSqrtPrice - sqrtRatioA) / (sqrtRatioB - sqrtRatioA);
-
-      amount0Desired = BigNumber.from(totalValue)
-        .mul(BigNumber.from(Math.floor(token0Portion * 1e6)))
-        .div(BigNumber.from(1e6));
-      amount1Desired = BigNumber.from(totalValue)
-        .mul(
-          BigNumber.from(
-            Math.floor(token1Portion * currentSqrtPrice ** 2 * 1e6)
-          )
-        )
-        .div(BigNumber.from(1e6));
-    }
+    this.log(`Amount0 desired: ${formatUnits(amount0Desired, token0Decimals)}`);
+    this.log(`Amount1 desired: ${formatUnits(amount1Desired, token1Decimals)}`);
 
     // Get configured slippage or use defaults
+    const slippage =
+      this.strategy.slippage?.position || DEFAULT_SLIPPAGE.LP_POSITION;
+
+    // Calculate minimum amounts based on slippage
+    const amount0Min = amount0Desired
+      .mul(1000 - Math.floor(slippage * 1000))
+      .div(1000);
+    const amount1Min = amount1Desired
+      .mul(1000 - Math.floor(slippage * 1000))
+      .div(1000);
+
+    // Get configured swap slippage or use defaults
     const swapSlippage =
-      this.strategy.slippage?.swap ?? DEFAULT_SLIPPAGE.LP_SWAP;
-    const positionSlippage =
-      this.strategy.slippage?.position ?? DEFAULT_SLIPPAGE.LP_POSITION;
+      this.strategy.slippage?.swap || DEFAULT_SLIPPAGE.LP_SWAP;
 
     // Check token balances and swap if needed
     const token0Contract = new Contract(
@@ -361,17 +330,31 @@ export class LPExecutor
       token1Contract.balanceOf(wallet.address),
     ]);
 
+    this.log(`Balance0: ${formatUnits(balance0, token0Decimals)}`);
+    this.log(`Balance1: ${formatUnits(balance1, token1Decimals)}`);
+
+    const currentSqrtPrice = Number(pool.sqrtRatioX96) / 2 ** 96;
+
     // Calculate required swaps
     if (balance0.lt(amount0Desired)) {
       const shortfall0 = amount0Desired.sub(balance0);
-      // Need to swap token1 for token0 (add configured slippage)
+      this.log(`Shortfall0: ${formatUnits(shortfall0, token0Decimals)}`);
+
+      // Get quote for 1 USDC -> WETH
+      const { expectedAmountOut: quote } = await this.getQuote(
+        this.strategy.token1,
+        this.strategy.token0,
+        parseUnits('1', token1Decimals),
+        wallet
+      );
+      this.log(`Quote: ${formatUnits(quote, token0Decimals)}`);
+
+      // Calculate token1 amount needed based on quote
       const token1ToSwap = shortfall0
-        .mul(
-          BigNumber.from(
-            Math.floor(currentSqrtPrice * (1 + swapSlippage) * 1e6)
-          )
-        )
-        .div(BigNumber.from(1e6));
+        .mul(parseUnits('1', token1Decimals))
+        .div(quote);
+      this.log(`Token1 to swap: ${formatUnits(token1ToSwap, token1Decimals)}`);
+
       if (balance1.gte(token1ToSwap)) {
         let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
         if (this.strategy.slippage) {
@@ -397,14 +380,23 @@ export class LPExecutor
 
     if (balance1.lt(amount1Desired)) {
       const shortfall1 = amount1Desired.sub(balance1);
-      // Need to swap token0 for token1 (add configured slippage)
+      this.log(`Shortfall1: ${formatUnits(shortfall1, token1Decimals)}`);
+
+      // Get quote for 1 USDC -> WETH
+      const { expectedAmountOut: quote } = await this.getQuote(
+        this.strategy.token0,
+        this.strategy.token1,
+        parseUnits('1', token0Decimals),
+        wallet
+      );
+      this.log(`Quote: ${formatUnits(quote, token1Decimals)}`);
+
+      // Calculate token0 amount needed based on quote
       const token0ToSwap = shortfall1
-        .mul(
-          BigNumber.from(
-            Math.floor((1 / (currentSqrtPrice * (1 + swapSlippage))) * 1e6)
-          )
-        )
-        .div(BigNumber.from(1e6));
+        .mul(parseUnits('1', token0Decimals))
+        .div(quote);
+      this.log(`Token0 to swap: ${formatUnits(token0ToSwap, token0Decimals)}`);
+
       if (balance0.gte(token0ToSwap)) {
         let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
         if (this.strategy.slippage) {
@@ -434,14 +426,17 @@ export class LPExecutor
       token1Contract.balanceOf(wallet.address),
     ]);
 
+    this.log(`Final balance0: ${formatUnits(finalBalance0, token0Decimals)}`);
+    this.log(`Final balance1: ${formatUnits(finalBalance1, token1Decimals)}`);
+
     if (finalBalance0.lt(amount0Desired) || finalBalance1.lt(amount1Desired)) {
       throw new Error('Insufficient balance after swaps');
     }
 
     // Approve with a buffer based on position slippage
-    const approvalBuffer = BigNumber.from(
-      Math.floor((1 + positionSlippage) * 100)
-    ).div(BigNumber.from(100));
+    const approvalBuffer = BigNumber.from(Math.floor((1 + slippage) * 100)).div(
+      BigNumber.from(100)
+    );
     const amount0WithBuffer = amount0Desired.mul(approvalBuffer);
     const amount1WithBuffer = amount1Desired.mul(approvalBuffer);
 
@@ -458,12 +453,8 @@ export class LPExecutor
       tickUpper,
       amount0Desired,
       amount1Desired,
-      amount0Min: amount0Desired
-        .mul(BigNumber.from(Math.floor((1 - positionSlippage) * 100)))
-        .div(BigNumber.from(100)),
-      amount1Min: amount1Desired
-        .mul(BigNumber.from(Math.floor((1 - positionSlippage) * 100)))
-        .div(BigNumber.from(100)),
+      amount0Min,
+      amount1Min,
       recipient: wallet.address,
       deadline: Math.floor(Date.now() / 1000) + 1800,
     };
@@ -697,16 +688,28 @@ export class LPExecutor
       this.strategy.token1Name
     );
 
+    const poolAddress = await this.getPoolAddress(
+      token0Address,
+      token1Address,
+      fee,
+      wallet
+    );
+
+    const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
+
+    const [sqrtPriceX96, tick, liquidity] = await poolContract.slot0();
+
     const pool = new Pool(
       token0,
       token1,
       fee as FeeAmount,
-      '0', // sqrtPriceX96
-      '0', // liquidity
-      0 // tick
+      sqrtPriceX96,
+      liquidity,
+      tick
     );
 
     this.poolCache.set(cacheKey, pool);
+
     return pool;
   }
 
@@ -783,6 +786,7 @@ export class LPExecutor
   public async getDisplayInfo(): Promise<string[]> {
     return [
       `Type: Liquidity Pool`,
+      `Key: ${this.strategy.key}`,
       `Pool: ${this.strategy.token0Symbol}-${this.strategy.token1Symbol}`,
       `Range: ${this.strategy.priceRange.lowerBoundPercent}% to +${this.strategy.priceRange.upperBoundPercent}%`,
       `Active Positions: ${this.positions.size}`,

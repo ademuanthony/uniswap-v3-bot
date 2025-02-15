@@ -279,7 +279,7 @@ export class CLIManager {
     try {
       switch (action?.toLowerCase()) {
         case 'start':
-          // await strategy.start(this.router, this.wallet);
+          await strategy.start();
           this.log(`Started strategy: ${strategyKey}`);
           await this.updateStrategyState(strategyKey, { status: 'Running' });
           break;
