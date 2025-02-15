@@ -117,13 +117,13 @@ async function main() {
 
         const executor = createExecutor(strategy);
         executor.setLogger(cli);
-        cli.registerStrategy(executor);
+        await cli.registerStrategy(executor);
         cli.log(`Registered strategy: ${strategy.name}`);
 
         // Set up status update interval
         setInterval(async () => {
           const status = await executor.getStatus();
-          cli.updateStrategyState(strategy.name, status);
+          await cli.updateStrategyState(strategy.name, status);
         }, 5000);
       } catch (error) {
         const errorMessage =

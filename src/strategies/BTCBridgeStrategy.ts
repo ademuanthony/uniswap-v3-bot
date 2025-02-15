@@ -349,7 +349,7 @@ export class BTCBridgeExecutor
     return this.strategy.key;
   }
 
-  public getDisplayInfo(): string[] {
+  public async getDisplayInfo(): Promise<string[]> {
     return [
       `Type: BTC Bridge`,
       `Amount per mint: ${this.strategy.amount} BTC`,

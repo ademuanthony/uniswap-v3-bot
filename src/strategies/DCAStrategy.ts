@@ -5,7 +5,7 @@ import { getTokenBalance, getTokenDecimals } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 import { Web3Helper } from '../utils/web3';
-import { parseEther, parseUnits } from 'ethers/lib/utils';
+import { formatUnits, parseEther, parseUnits } from 'ethers/lib/utils';
 import { Contract } from 'ethers';
 
 dotenv.config();
@@ -114,8 +114,8 @@ export class DCAExecutor
       `Type: DCA`,
       `Key: ${this.strategy.key}`,
       `Amount: ${this.strategy.amount} ${this.strategy.base_token}`,
-      `${this.strategy.base_token} Balance: ${parseUnits(tokenInBalance.toString(), tokenInDecimals)}`,
-      `${this.strategy.quote_token} Balance: ${parseUnits(tokenOutBalance.toString(), tokenOutDecimals)}`,
+      `${this.strategy.base_token} Balance: ${formatUnits(tokenInBalance, tokenInDecimals)}`,
+      `${this.strategy.quote_token} Balance: ${formatUnits(tokenOutBalance, tokenOutDecimals)}`,
       `Wallet: ${wallet.address}`,
       `Interval: ${this.strategy.interval}s`,
       `Last Run: ${new Date().toISOString()}`,

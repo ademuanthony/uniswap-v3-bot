@@ -121,10 +121,10 @@ export class CLIManager {
     this.screen.render();
   }
 
-  public registerStrategy(strategy: StrategyExecutor): void {
+  public async registerStrategy(strategy: StrategyExecutor): Promise<void> {
     const key = strategy.getKey();
     this.strategies.set(key, strategy);
-    this.updateStrategyState(key, {
+    await this.updateStrategyState(key, {
       name: strategy.getName(),
       status: strategy.isRunning() ? 'Running' : 'Stopped',
       lastUpdate: new Date().toISOString(),
@@ -136,10 +136,10 @@ export class CLIManager {
     this.screen.render();
   }
 
-  public updateStrategyState(
+  public async updateStrategyState(
     strategyName: string,
     state: Partial<StrategyState>
-  ): void {
+  ): Promise<void> {
     const currentState = this.strategyStates.get(strategyName) || {
       name: strategyName,
       status: 'Unknown',
@@ -152,28 +152,36 @@ export class CLIManager {
       lastUpdate: new Date().toISOString(),
     });
 
-    this.updateStatePanel();
+    await this.updateStatePanel();
   }
 
   private async updateStatePanel(): Promise<void> {
-    let content = '';
-    for (const [key, strategy] of this.strategies) {
-      const state = this.strategyStates.get(key);
-      if (!state) continue;
+    try {
+      let content = '';
+      for (const [key, strategy] of this.strategies) {
+        const state = this.strategyStates.get(key);
+        if (!state) continue;
 
-      content += `{bold}${state.name}{/bold}\n`;
-      content += `Status: ${state.status}\n`;
+        content += `${state.name}\n`;
+        content += `Status: ${state.status}\n`;
 
-      const displayInfo = await strategy.getDisplayInfo();
-      displayInfo.forEach((line) => {
-        content += `${line}\n`;
-      });
+        try {
+          const displayInfo = await strategy.getDisplayInfo();
+          for (const line of displayInfo) {
+            content += `${line}\n`;
+          }
+        } catch (error) {
+          this.log(`Error getting display info for ${state.name}: ${error}`);
+        }
 
-      content += `Last Update: ${state.lastUpdate}\n\n`;
+        content += `Last Update: ${state.lastUpdate}\n\n`;
+      }
+
+      this.statePanel.setContent(content);
+      this.screen.render();
+    } catch (error) {
+      this.log(`Error updating state panel: ${error}`);
     }
-
-    this.statePanel.setContent(content);
-    this.screen.render();
   }
 
   private async shutdown(): Promise<void> {
@@ -273,13 +281,13 @@ export class CLIManager {
         case 'start':
           // await strategy.start(this.router, this.wallet);
           this.log(`Started strategy: ${strategyKey}`);
-          this.updateStrategyState(strategyKey, { status: 'Running' });
+          await this.updateStrategyState(strategyKey, { status: 'Running' });
           break;
 
         case 'stop':
           strategy.stop();
           this.log(`Stopped strategy: ${strategyKey}`);
-          this.updateStrategyState(strategyKey, { status: 'Stopped' });
+          await this.updateStrategyState(strategyKey, { status: 'Stopped' });
           break;
 
         case 'status':

@@ -1,10 +1,6 @@
 import { Contract, Wallet } from 'ethers';
+import erc20Abi from '../abis/erc20Abi';
 
-const erc20Abi = [
-  'function decimals() view returns (uint8)',
-  'function allowance(address owner, address spender) view returns (uint256)',
-  'function approve(address spender, uint256 amount) returns (bool)',
-];
 
 export async function getTokenDecimals(tokenAddress: string, wallet: Wallet): Promise<number> {
   const tokenContract = new Contract(tokenAddress, erc20Abi, wallet);

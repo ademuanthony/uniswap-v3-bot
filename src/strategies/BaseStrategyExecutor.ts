@@ -4,9 +4,10 @@ import {
   encodeRouterPath,
   encodeUniversalRouterInput,
 } from '../utils/routerEncoding';
-import { UNIVERSAL_ROUTER_ADDRESS } from '../utils/web3';
+import { Web3Helper } from '../utils/web3';
 import poolAbi from '../abis/pool';
 import erc20Abi from '../abis/erc20Abi';
+import quoterAbi from '../abis/quoter';
 
 export abstract class BaseStrategyExecutor {
   setLogger(logger: { log: (message: string) => void }) {
@@ -23,16 +24,18 @@ export abstract class BaseStrategyExecutor {
     amountIn: BigNumber,
     wallet: Wallet
   ) {
-    const { expectedAmountOut } = await this.getUniversalRouterQuote(
+    const quoterAddress = process.env.QUOTER_ADDRESS as string;
+    const quoter = new Contract(quoterAddress, quoterAbi, wallet);
+
+    const quote = await quoter.callStatic.quoteExactInputSingle(
       tokenIn,
       tokenOut,
-      amountIn,
-      0,
       3000,
-      wallet
+      amountIn,
+      0
     );
 
-    return { expectedAmountOut };
+    return { expectedAmountOut: quote };
   }
 
   protected async executeSwap(params: {
@@ -42,39 +45,21 @@ export abstract class BaseStrategyExecutor {
     slippage: number;
     wallet: Wallet;
   }) {
-    const network = 'sepolia';
-    const UNIVERSAL_ROUTER = UNIVERSAL_ROUTER_ADDRESS[network];
 
     this.log(
       `Swapping ${params.amountIn.toString()} of token ${params.tokenIn}`
     );
     this.log(`To token ${params.tokenOut} with slippage ${params.slippage}`);
-    this.log(`Using Universal Router at ${UNIVERSAL_ROUTER}`);
 
-    const UNIVERSAL_ROUTER_ABI = [
-      'function execute(bytes commands, bytes[] inputs, uint256 deadline) payable returns ()',
-    ];
-
-    const router = new Contract(
-      UNIVERSAL_ROUTER,
-      UNIVERSAL_ROUTER_ABI,
-      params.wallet
-    );
+    const router = Web3Helper.getRouter(params.wallet);
 
     // Check token balance and allowance
-    const tokenContract = new Contract(
-      params.tokenIn,
-      erc20Abi,
-      params.wallet
-    );
+    const tokenContract = new Contract(params.tokenIn, erc20Abi, params.wallet);
 
     const [balance, allowance] = await Promise.all([
       tokenContract.balanceOf(params.wallet.address),
       tokenContract.allowance(params.wallet.address, router.address),
     ]);
-
-    this.log(`Balance: ${balance.toString()}`);
-    this.log(`Allowance: ${allowance.toString()}`);
 
     if (balance.lt(params.amountIn)) {
       throw new Error(
@@ -84,36 +69,38 @@ export abstract class BaseStrategyExecutor {
 
     // Approve only if needed
     if (allowance.lt(params.amountIn)) {
-      this.log(
-        `Approving Universal Router to spend ${params.amountIn.toString()}`
-      );
       const approvalTx = await tokenContract.approve(
         router.address,
         params.amountIn
       );
       await approvalTx.wait();
-      this.log('Approval confirmed');
     }
 
     // Get quote and encode swap data
-    const { expectedAmountOut, swapData } = await this.getUniversalRouterQuote(
+    const { expectedAmountOut } = await this.getQuote(
       params.tokenIn,
       params.tokenOut,
       params.amountIn,
-      params.slippage,
-      3000,
       params.wallet
     );
 
-    this.log(`Expected amount out: ${expectedAmountOut.toString()} wei`);
+    const slippage = params.slippage * 100; 
+
+    const amountOutMinimum = expectedAmountOut.mul(BigNumber.from(slippage)).div(10000);
 
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
 
-    const tx = await router.execute(
-      swapData.commands,
-      swapData.inputs,
-      deadline,
-      { gasLimit: 300000 }
+    const tx = await router.exactInputSingle(
+      {
+        tokenIn: params.tokenIn,
+        tokenOut: params.tokenOut,
+        fee: 3000,
+        recipient: params.wallet.address,
+        deadline,
+        amountIn: params.amountIn,
+        amountOutMinimum: amountOutMinimum,
+        sqrtPriceLimitX96: 0,
+      }
     );
 
     this.log(`Transaction submitted: ${tx.hash}`);
@@ -138,11 +125,7 @@ export abstract class BaseStrategyExecutor {
     );
 
     const pool = await poolFactory.getPool(tokenIn, tokenOut, fee);
-    const poolContract = new Contract(
-      pool,
-      poolAbi,
-      wallet
-    );
+    const poolContract = new Contract(pool, poolAbi, wallet);
 
     // Get current price from slot0
     const slot0 = await poolContract.slot0();
