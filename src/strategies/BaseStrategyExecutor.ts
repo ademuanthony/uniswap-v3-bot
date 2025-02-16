@@ -47,21 +47,37 @@ export abstract class BaseStrategyExecutor {
     slippage: number;
     wallet: Wallet;
   }) {
-
-    const token0Decimals = await getTokenDecimals(params.tokenIn, params.wallet);
+    const WETH_ADDRESS = process.env.WETH_ADDRESS as string;
+    const token0Decimals = await getTokenDecimals(
+      params.tokenIn,
+      params.wallet
+    );
 
     this.log(
-      `Swapping ${formatUnits(params.amountIn, token0Decimals)} of token ${params.tokenIn}`
+      `Swapping ${formatUnits(params.amountIn, token0Decimals)} of token ${
+        params.tokenIn
+      }`
     );
     this.log(`To token ${params.tokenOut} with slippage ${params.slippage}`);
 
     const router = Web3Helper.getRouter(params.wallet);
+    let needsWrap = false;
+    let needsUnwrap = false;
 
-    // Check token balance and allowance
+    // Check if we're dealing with ETH/WETH
+    if (params.tokenIn.toLowerCase() === WETH_ADDRESS.toLowerCase()) {
+      needsWrap = true;
+    } else if (params.tokenOut.toLowerCase() === WETH_ADDRESS.toLowerCase()) {
+      needsUnwrap = true;
+    }
+
     const tokenContract = new Contract(params.tokenIn, erc20Abi, params.wallet);
 
+    // Check token balance and allowance
     const [balance, allowance] = await Promise.all([
-      tokenContract.balanceOf(params.wallet.address),
+      needsWrap
+        ? params.wallet.getBalance()
+        : tokenContract.balanceOf(params.wallet.address),
       tokenContract.allowance(params.wallet.address, router.address),
     ]);
 
@@ -88,28 +104,43 @@ export abstract class BaseStrategyExecutor {
       params.wallet
     );
 
-    const slippage = params.slippage * 100; 
-
-    const amountOutMinimum = expectedAmountOut.mul(BigNumber.from(slippage)).div(10000);
+    const slippageBps = params.slippage * 100;
+    const amountOutMinimum = expectedAmountOut
+      .mul(BigNumber.from(10000 - slippageBps))
+      .div(10000);
 
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes
 
-    const tx = await router.exactInputSingle(
-      {
-        tokenIn: params.tokenIn,
-        tokenOut: params.tokenOut,
-        fee: 3000,
-        recipient: params.wallet.address,
-        deadline,
-        amountIn: params.amountIn,
-        amountOutMinimum: amountOutMinimum,
-        sqrtPriceLimitX96: 0,
-      }
-    );
+    // Execute swap
+    const swapParams = {
+      tokenIn: params.tokenIn,
+      tokenOut: params.tokenOut,
+      fee: 3000,
+      recipient: needsUnwrap ? router.address : params.wallet.address,
+      deadline,
+      amountIn: params.amountIn,
+      amountOutMinimum,
+      sqrtPriceLimitX96: 0,
+    };
+
+    const value = needsWrap ? params.amountIn : 0;
+    const tx = await router.exactInputSingle(swapParams, { value });
 
     this.log(`Transaction submitted: ${tx.hash}`);
     const receipt = await tx.wait();
     this.log(`Transaction confirmed in block ${receipt.blockNumber}`);
+
+    // Handle unwrapping WETH if needed
+    if (needsUnwrap) {
+      const weth = new Contract(
+        WETH_ADDRESS,
+        ['function withdraw(uint256 amount)'],
+        params.wallet
+      );
+      const unwrapTx = await weth.withdraw(amountOutMinimum);
+      await unwrapTx.wait();
+    }
+
     return receipt;
   }
 
