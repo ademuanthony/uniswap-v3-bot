@@ -69,6 +69,10 @@ export class BTCBridgeExecutor
     this.strategy = strategy;
   }
 
+  protected override log(message: string) {
+    super.log(`[${this.strategy.key}] ${message}`);
+  }
+
   async start(): Promise<void> {
     if (this._isRunning) return;
 

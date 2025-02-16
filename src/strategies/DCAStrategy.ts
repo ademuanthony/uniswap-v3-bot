@@ -29,6 +29,10 @@ export class DCAExecutor
     this.strategy = strategy;
   }
 
+  protected override log(message: string) {
+    super.log(`[${this.strategy.key}] ${message}`);
+  }
+
   async start(): Promise<void> {
     if (this._isRunning) return;
 
@@ -131,9 +135,9 @@ export class DCAExecutor
     return `Unknown command: ${action}. No custom commands available for DCA strategy`;
   }
 
-  public async wrapWETH(args: string[]): Promise<string> {
+  public async wrapWETH([amountIn]: string[]): Promise<string> {
     this.log(`Wrapping WETH`);
-    if (args.length !== 1) {
+    if (!amountIn) {
       throw new Error(
         'Invalid number of arguments. Usage: wrapWETH <amountIn> (amount in ether)'
       );
@@ -146,7 +150,6 @@ export class DCAExecutor
     ];
     const wethContract = new Contract(weth, wethAbi, wallet);
 
-    const amountIn = parseEther(args[0]);
     this.log(`Depositing ${amountIn} WETH`);
     const tx = await wethContract.deposit({ value: amountIn });
     await tx.wait();

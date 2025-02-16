@@ -22,8 +22,8 @@ export const DEFAULT_SLIPPAGE = {
   GRID_ENTRY: 0.1, // 0.1% for grid entry
   GRID_PROFIT: 0.1, // 0.1% for taking profit
   GRID_LOSS: 0.5, // 0.5% for stop loss
-  LP_SWAP: 0.05, // 0.05% for swap
-  LP_POSITION: 0.05, // 0.05% for position
+  LP_SWAP: 0.5, // 0.05% for swap
+  LP_POSITION: 0.5, // 0.05% for position
 };
 
 export interface Config {

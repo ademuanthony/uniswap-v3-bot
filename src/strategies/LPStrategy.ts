@@ -1,4 +1,4 @@
-import { Contract, Wallet, BigNumber } from 'ethers';
+import { Contract, Wallet, BigNumber, ethers } from 'ethers';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import {
   LPPosition,
@@ -15,17 +15,11 @@ import { LPStrategyStorage } from '../types/Storage';
 import { Web3Helper } from '../utils/web3';
 import { formatUnits, parseUnits } from 'ethers/lib/utils';
 import dotenv from 'dotenv';
-
+import { tokenAddresses } from '../tokens';
+import { POSITION_MANAGER_ABI } from '../abis/positionManager';
 dotenv.config();
 
 const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as string;
-const POSITION_MANAGER_ABI = [
-  'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
-  'function mint(tuple(address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)',
-  'function collect(tuple(uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external payable returns (uint256 amount0, uint256 amount1)',
-  'function increaseLiquidity(tuple(uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external payable returns (uint128 liquidity, uint256 amount0, uint256 amount1)',
-  'function decreaseLiquidity(tuple(uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external payable returns (uint256 amount0, uint256 amount1)',
-];
 
 const FACTORY_ADDRESS = process.env.FACTORY_ADDRESS as string;
 const FACTORY_ABI = [
@@ -90,13 +84,13 @@ export class LPExecutor
 
     for (const [tokenId, position] of this.positions) {
       storage.positions[tokenId] = {
-        tokenId,
-        entryPrice: position.entryPrice.toString(),
+        tokenId: Number(tokenId),
+        entryPrice: position.entryPrice?.toString(),
         tickLower: position.tickLower,
         tickUpper: position.tickUpper,
-        liquidity: position.liquidity.toString(),
-        token0Balance: position.amount0.toString(),
-        token1Balance: position.amount1.toString(),
+        liquidity: position.liquidity?.toString(),
+        token0Balance: position.amount0?.toString(),
+        token1Balance: position.amount1?.toString(),
         lastCompounded: position.lastCompounded,
         timestamp: position.timestamp,
       };
@@ -106,6 +100,10 @@ export class LPExecutor
       this.storageFile,
       JSON.stringify(storage, null, 2)
     );
+  }
+
+  protected override log(message: string) {
+    super.log(`[${this.strategy.key}] ${message}`);
   }
 
   private async loadPositions() {
@@ -291,22 +289,6 @@ export class LPExecutor
     this.log(`Amount0 desired: ${formatUnits(amount0Desired, token0Decimals)}`);
     this.log(`Amount1 desired: ${formatUnits(amount1Desired, token1Decimals)}`);
 
-    // Get configured slippage or use defaults
-    const slippage =
-      this.strategy.slippage?.position || DEFAULT_SLIPPAGE.LP_POSITION;
-
-    // Calculate minimum amounts based on slippage
-    const amount0Min = amount0Desired
-      .mul(1000 - Math.floor(slippage * 1000))
-      .div(1000);
-    const amount1Min = amount1Desired
-      .mul(1000 - Math.floor(slippage * 1000))
-      .div(1000);
-
-    // Get configured swap slippage or use defaults
-    const swapSlippage =
-      this.strategy.slippage?.swap || DEFAULT_SLIPPAGE.LP_SWAP;
-
     // Check token balances and swap if needed
     const token0Contract = new Contract(
       this.strategy.token0,
@@ -326,14 +308,18 @@ export class LPExecutor
     );
 
     const [balance0, balance1] = await Promise.all([
-      token0Contract.balanceOf(wallet.address),
-      token1Contract.balanceOf(wallet.address),
+      this.strategy.token0.toLowerCase() ===
+      tokenAddresses['WETH'].toLowerCase()
+        ? Web3Helper.getProvider().getBalance(wallet.address)
+        : token0Contract.balanceOf(wallet.address),
+      this.strategy.token1.toLowerCase() ===
+      tokenAddresses['WETH'].toLowerCase()
+        ? Web3Helper.getProvider().getBalance(wallet.address)
+        : token1Contract.balanceOf(wallet.address),
     ]);
 
     this.log(`Balance0: ${formatUnits(balance0, token0Decimals)}`);
     this.log(`Balance1: ${formatUnits(balance1, token1Decimals)}`);
-
-    const currentSqrtPrice = Number(pool.sqrtRatioX96) / 2 ** 96;
 
     // Calculate required swaps
     if (balance0.lt(amount0Desired)) {
@@ -422,8 +408,14 @@ export class LPExecutor
 
     // Verify final balances after swaps
     const [finalBalance0, finalBalance1] = await Promise.all([
-      token0Contract.balanceOf(wallet.address),
-      token1Contract.balanceOf(wallet.address),
+      this.strategy.token0.toLowerCase() ===
+      tokenAddresses['WETH'].toLowerCase()
+        ? Web3Helper.getProvider().getBalance(wallet.address)
+        : token0Contract.balanceOf(wallet.address),
+      this.strategy.token1.toLowerCase() ===
+      tokenAddresses['WETH'].toLowerCase()
+        ? Web3Helper.getProvider().getBalance(wallet.address)
+        : token1Contract.balanceOf(wallet.address),
     ]);
 
     this.log(`Final balance0: ${formatUnits(finalBalance0, token0Decimals)}`);
@@ -433,6 +425,9 @@ export class LPExecutor
       throw new Error('Insufficient balance after swaps');
     }
 
+    const slippage =
+      this.strategy.slippage?.position || DEFAULT_SLIPPAGE.LP_POSITION;
+
     // Approve with a buffer based on position slippage
     const approvalBuffer = BigNumber.from(Math.floor((1 + slippage) * 100)).div(
       BigNumber.from(100)
@@ -440,10 +435,22 @@ export class LPExecutor
     const amount0WithBuffer = amount0Desired.mul(approvalBuffer);
     const amount1WithBuffer = amount1Desired.mul(approvalBuffer);
 
-    await Promise.all([
-      token0Contract.approve(POSITION_MANAGER_ADDRESS, amount0WithBuffer),
-      token1Contract.approve(POSITION_MANAGER_ADDRESS, amount1WithBuffer),
-    ]);
+    this.log(
+      `Approving token0: ${formatUnits(amount0WithBuffer, token0Decimals)}`
+    );
+    await token0Contract.approve(POSITION_MANAGER_ADDRESS, amount0WithBuffer);
+    this.log(
+      `Approving token1: ${formatUnits(amount1WithBuffer, token1Decimals)}`
+    );
+    await token1Contract.approve(POSITION_MANAGER_ADDRESS, amount1WithBuffer);
+
+    // Calculate minimum amounts based on slippage (using BigNumber)
+    const amount0Min = amount0Desired
+      .mul(BigNumber.from(1000 - Math.floor(slippage * 1000)))
+      .div(BigNumber.from(1000));
+    const amount1Min = amount1Desired
+      .mul(BigNumber.from(1000 - Math.floor(slippage * 1000)))
+      .div(BigNumber.from(1000));
 
     const params = {
       token0: this.strategy.token0,
@@ -451,22 +458,63 @@ export class LPExecutor
       fee: this.strategy.fee,
       tickLower,
       tickUpper,
-      amount0Desired,
-      amount1Desired,
+      amount0Desired: amount0Desired,
+      amount1Desired: amount1Desired,
       amount0Min,
       amount1Min,
       recipient: wallet.address,
-      deadline: Math.floor(Date.now() / 1000) + 1800,
+      deadline: Math.floor(Date.now() / 1000) + 1200,
     };
 
-    const tx = await positionManager.mint(params);
+    if (
+      this.strategy.token0.toLowerCase() > this.strategy.token1.toLowerCase()
+    ) {
+      [params.token0, params.token1] = [params.token1, params.token0];
+      [params.amount0Desired, params.amount1Desired] = [
+        params.amount1Desired,
+        params.amount0Desired,
+      ];
+      [params.amount0Min, params.amount1Min] = [
+        params.amount1Min,
+        params.amount0Min,
+      ];
+    }
+
+    const overrides = {
+      gasLimit: 1000000,
+      value:
+        this.strategy.token0.toLowerCase() ===
+        tokenAddresses['WETH'].toLowerCase()
+          ? amount0Desired
+          : this.strategy.token1.toLowerCase() ===
+            tokenAddresses['WETH'].toLowerCase()
+          ? amount1Desired
+          : BigNumber.from(0),
+    };
+
+    const tx = await positionManager.mint(params, overrides);
     const receipt = await tx.wait();
 
     // Get tokenId from event
-    const event = receipt.logs.find(
-      (log: { eventName: string }) => log.eventName === 'IncreaseLiquidity'
-    );
-    const tokenId = event.args.tokenId;
+    const contractInterface = new ethers.utils.Interface(POSITION_MANAGER_ABI);
+    const mintEvent = receipt.logs
+      .map((log: any) => {
+        try {
+          return contractInterface.parseLog(log);
+        } catch (e) {
+          return null;
+        }
+      })
+      .find((event: any) => event && event.name === 'IncreaseLiquidity');
+
+    if (!mintEvent) {
+      throw new Error(
+        'Failed to find IncreaseLiquidity event in transaction logs'
+      );
+    }
+
+    const tokenId = mintEvent.args.tokenId;
+    console.log(`Token ID: ${tokenId}`);
 
     // Initialize position tracking
     const position = await this.getPosition(tokenId, positionManager, wallet);
@@ -476,6 +524,7 @@ export class LPExecutor
     const currentPrice = await this.getCurrentPrice(wallet);
     position.entryPrice = currentPrice;
     this.positions.set(tokenId, position);
+    this.log(`Position created with tokenId: ${tokenId}`);
     await this.savePositions();
   }
 
