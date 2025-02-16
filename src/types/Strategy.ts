@@ -22,7 +22,7 @@ export const DEFAULT_SLIPPAGE = {
   GRID_ENTRY: 0.1, // 0.1% for grid entry
   GRID_PROFIT: 0.1, // 0.1% for taking profit
   GRID_LOSS: 0.5, // 0.5% for stop loss
-  LP_SWAP: 0.5, // 0.05% for swap
+  LP_SWAP: 0.5, // 0.5% for swap
   LP_POSITION: 0.5, // 0.05% for position
 };
 
@@ -64,8 +64,7 @@ export interface LPStrategy extends BaseStrategy {
     lowerBoundPercent: number; // e.g., -10 means 10% below current price
     upperBoundPercent: number; // e.g., 15 means 15% above current price
   };
-  amount0Desired: string;
-  amount1Desired: string;
+  totalValueInToken0: string;
   initialTickLower?: number;
   initialTickUpper?: number;
   slippage?: {

@@ -1,11 +1,11 @@
 import dotenv from 'dotenv';
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
 import { tokenAddresses } from '../tokens';
-import { getTokenBalance, getTokenDecimals } from '../utils/tokenUtils';
+import { getTokenDecimals } from '../utils/tokenUtils';
 import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 import { Web3Helper } from '../utils/web3';
-import { formatUnits, parseEther, parseUnits } from 'ethers/lib/utils';
+import { formatUnits, parseUnits } from 'ethers/lib/utils';
 import { Contract } from 'ethers';
 
 dotenv.config();
@@ -110,8 +110,8 @@ export class DCAExecutor
     const [tokenInDecimals, tokenOutDecimals, tokenInBalance, tokenOutBalance] = await Promise.all([
       getTokenDecimals(tokenIn, wallet),
       getTokenDecimals(tokenOut, wallet),
-      getTokenBalance(tokenIn, wallet),
-      getTokenBalance(tokenOut, wallet),
+      this.getBalance(tokenIn, wallet.address),
+      this.getBalance(tokenOut, wallet.address),
     ]);
 
     return [

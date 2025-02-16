@@ -1,15 +1,8 @@
 import { Contract, Wallet } from 'ethers';
 import erc20Abi from '../abis/erc20Abi';
-
-
 export async function getTokenDecimals(tokenAddress: string, wallet: Wallet): Promise<number> {
   const tokenContract = new Contract(tokenAddress, erc20Abi, wallet);
   return await tokenContract.decimals();
-}
-
-export async function getTokenBalance(tokenAddress: string, wallet: Wallet): Promise<bigint> {
-  const tokenContract = new Contract(tokenAddress, erc20Abi, wallet);
-  return await tokenContract.balanceOf(wallet.address);
 }
 
 export async function approveToken(

@@ -10,6 +10,7 @@ import erc20Abi from '../abis/erc20Abi';
 import quoterAbi from '../abis/quoter';
 import { getTokenDecimals } from '../utils/tokenUtils';
 import { formatUnits } from 'ethers/lib/utils';
+import { tokenAddresses } from '../tokens';
 
 export abstract class BaseStrategyExecutor {
   setLogger(logger: { log: (message: string) => void }) {
@@ -18,6 +19,16 @@ export abstract class BaseStrategyExecutor {
 
   protected log(message: string) {
     Logger.log(message);
+  }
+
+  protected async getBalance(tokenAddress: string, walletAddress: string): Promise<BigNumber> {
+    const tokenContract = new Contract(tokenAddress, erc20Abi, Web3Helper.getProvider());
+    const balance = await tokenContract.balanceOf(walletAddress);
+    if (tokenAddress === tokenAddresses['WETH']) {
+      const nativeBalance = await Web3Helper.getProvider().getBalance(walletAddress);
+      return nativeBalance.add(balance);
+    }
+    return balance;
   }
 
   protected async getQuote(

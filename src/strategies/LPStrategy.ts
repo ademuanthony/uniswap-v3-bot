@@ -67,7 +67,6 @@ export class LPExecutor
     this.strategy = strategy;
     this.storageFile = path.join(this.storageDir, `${strategy.key}.json`);
     this.initStorage();
-    this.loadPositions();
   }
 
   private initStorage() {
@@ -84,7 +83,7 @@ export class LPExecutor
 
     for (const [tokenId, position] of this.positions) {
       storage.positions[tokenId] = {
-        tokenId: Number(tokenId),
+        tokenId: position.tokenId,
         entryPrice: position.entryPrice?.toString(),
         tickLower: position.tickLower,
         tickUpper: position.tickUpper,
@@ -125,13 +124,19 @@ export class LPExecutor
         return;
       }
 
+      this.log(`Loading ${Object.keys(storage.positions).length} positions`);
+
       for (const [tokenId, posData] of Object.entries(storage.positions)) {
         this.positions.set(Number(tokenId), {
           tokenId: Number(tokenId),
           entryPrice: BigInt(posData.entryPrice),
           liquidity: BigInt(posData.liquidity),
-          amount0: BigInt(posData.token0Balance),
-          amount1: BigInt(posData.token1Balance),
+          amount0: posData.token0Balance
+            ? BigInt(posData.token0Balance)
+            : BigInt(0),
+          amount1: posData.token1Balance
+            ? BigInt(posData.token1Balance)
+            : BigInt(0),
           token0: '',
           token1: '',
           fee: 0,
@@ -165,6 +170,8 @@ export class LPExecutor
 
     this._isRunning = true;
     this.stopRequested = false;
+
+    await this.loadPositions();
 
     // Create initial position if none exist
     if (this.positions.size === 0) {
@@ -270,30 +277,41 @@ export class LPExecutor
     );
 
     // Calculate tick range based on current price and configured bounds
-    const { tickLower, tickUpper } = await this.calculateOptimalTickRange(
-      pool,
-      0,
+    const { tickLower, tickUpper, currentTick } =
+      await this.calculateOptimalTickRange(pool, 0, wallet);
+
+    // Parse amounts with proper decimals
+    const totalValueInToken0 = parseUnits(
+      this.strategy.totalValueInToken0,
+      token0Decimals
+    );
+
+    const totalValueInToken1 = await this.getQuote(
+      this.strategy.token0,
+      this.strategy.token1,
+      totalValueInToken0,
       wallet
     );
 
-    // Parse amounts with proper decimals
-    const amount0Desired = parseUnits(
-      this.strategy.amount0Desired,
-      token0Decimals
-    );
-    const amount1Desired = parseUnits(
-      this.strategy.amount1Desired,
-      token1Decimals
-    );
+    const lowerBound = BigNumber.from(Math.abs(currentTick - tickLower));
+    const upperBound = BigNumber.from(Math.abs(tickUpper - currentTick));
 
-    this.log(`Amount0 desired: ${formatUnits(amount0Desired, token0Decimals)}`);
-    this.log(`Amount1 desired: ${formatUnits(amount1Desired, token1Decimals)}`);
+    const totalBound = lowerBound.add(upperBound);
+
+    let amount0Desired = totalValueInToken0.mul(lowerBound).div(totalBound);
+    let amount1Desired = totalValueInToken1.expectedAmountOut
+      .mul(upperBound)
+      .div(totalBound);
+
+    this.log(`amount0Desired: ${formatUnits(amount0Desired, token0Decimals)}`);
+    this.log(`amount1Desired: ${formatUnits(amount1Desired, token1Decimals)}`);
+
+    let currentPrice = await this.getCurrentPrice(wallet);
 
     // Check token balances and swap if needed
     const token0Contract = new Contract(
       this.strategy.token0,
       [
-        'function balanceOf(address) view returns (uint256)',
         'function approve(address spender, uint256 amount) external returns (bool)',
       ],
       wallet
@@ -301,21 +319,14 @@ export class LPExecutor
     const token1Contract = new Contract(
       this.strategy.token1,
       [
-        'function balanceOf(address) view returns (uint256)',
         'function approve(address spender, uint256 amount) external returns (bool)',
       ],
       wallet
     );
 
     const [balance0, balance1] = await Promise.all([
-      this.strategy.token0.toLowerCase() ===
-      tokenAddresses['WETH'].toLowerCase()
-        ? Web3Helper.getProvider().getBalance(wallet.address)
-        : token0Contract.balanceOf(wallet.address),
-      this.strategy.token1.toLowerCase() ===
-      tokenAddresses['WETH'].toLowerCase()
-        ? Web3Helper.getProvider().getBalance(wallet.address)
-        : token1Contract.balanceOf(wallet.address),
+      this.getBalance(this.strategy.token0, wallet.address),
+      this.getBalance(this.strategy.token1, wallet.address),
     ]);
 
     this.log(`Balance0: ${formatUnits(balance0, token0Decimals)}`);
@@ -336,10 +347,9 @@ export class LPExecutor
       this.log(`Quote: ${formatUnits(quote, token0Decimals)}`);
 
       // Calculate token1 amount needed based on quote
-      const token1ToSwap = shortfall0
+      let token1ToSwap = shortfall0
         .mul(parseUnits('1', token1Decimals))
         .div(quote);
-      this.log(`Token1 to swap: ${formatUnits(token1ToSwap, token1Decimals)}`);
 
       if (balance1.gte(token1ToSwap)) {
         let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
@@ -351,6 +361,14 @@ export class LPExecutor
             }
           ).swap;
         }
+
+        const slippageBuffer = 1.01; // 1% buffer for slippage
+        token1ToSwap = token1ToSwap
+          .mul(Math.floor(slippageBuffer * 100))
+          .div(100);
+        this.log(
+          `Token1 to swap: ${formatUnits(token1ToSwap, token1Decimals)}`
+        );
 
         await this.executeSwap({
           tokenIn: this.strategy.token1,
@@ -378,10 +396,9 @@ export class LPExecutor
       this.log(`Quote: ${formatUnits(quote, token1Decimals)}`);
 
       // Calculate token0 amount needed based on quote
-      const token0ToSwap = shortfall1
+      let token0ToSwap = shortfall1
         .mul(parseUnits('1', token0Decimals))
         .div(quote);
-      this.log(`Token0 to swap: ${formatUnits(token0ToSwap, token0Decimals)}`);
 
       if (balance0.gte(token0ToSwap)) {
         let slippage = DEFAULT_SLIPPAGE.LP_SWAP;
@@ -393,6 +410,14 @@ export class LPExecutor
             }
           ).swap;
         }
+
+        const slippageBuffer = 1.01; // 1% buffer for slippage
+        token0ToSwap = token0ToSwap
+          .mul(Math.floor(slippageBuffer * 100))
+          .div(100);
+        this.log(
+          `Token0 to swap: ${formatUnits(token0ToSwap, token0Decimals)}`
+        );
 
         await this.executeSwap({
           tokenIn: this.strategy.token0,
@@ -408,14 +433,8 @@ export class LPExecutor
 
     // Verify final balances after swaps
     const [finalBalance0, finalBalance1] = await Promise.all([
-      this.strategy.token0.toLowerCase() ===
-      tokenAddresses['WETH'].toLowerCase()
-        ? Web3Helper.getProvider().getBalance(wallet.address)
-        : token0Contract.balanceOf(wallet.address),
-      this.strategy.token1.toLowerCase() ===
-      tokenAddresses['WETH'].toLowerCase()
-        ? Web3Helper.getProvider().getBalance(wallet.address)
-        : token1Contract.balanceOf(wallet.address),
+      this.getBalance(this.strategy.token0, wallet.address),
+      this.getBalance(this.strategy.token1, wallet.address),
     ]);
 
     this.log(`Final balance0: ${formatUnits(finalBalance0, token0Decimals)}`);
@@ -521,7 +540,7 @@ export class LPExecutor
     this.positions.set(tokenId, position);
 
     // Store entry price with new position
-    const currentPrice = await this.getCurrentPrice(wallet);
+    currentPrice = await this.getCurrentPrice(wallet);
     position.entryPrice = currentPrice;
     this.positions.set(tokenId, position);
     this.log(`Position created with tokenId: ${tokenId}`);
@@ -677,7 +696,8 @@ export class LPExecutor
       deadline: Math.floor(Date.now() / 1000) + 1800,
     };
 
-    await positionManager.decreaseLiquidity(params);
+    const tx = await positionManager.decreaseLiquidity(params);
+    await tx.wait()
   }
 
   private getTickSpacing(fee: number): number {
@@ -698,7 +718,7 @@ export class LPExecutor
   public async stop(): Promise<void> {
     this.stopRequested = true;
     this._isRunning = false;
-    await this.savePositions();
+    // await this.savePositions();
   }
 
   public isRunning(): boolean {
@@ -766,7 +786,7 @@ export class LPExecutor
     pool: Pool,
     _currentTick: number,
     wallet: Wallet
-  ): Promise<{ tickLower: number; tickUpper: number }> {
+  ): Promise<{ tickLower: number; tickUpper: number; currentTick: number }> {
     const tickSpacing = this.getTickSpacing(pool.fee);
     const poolAddress = await this.getPoolAddress(
       pool.token0.address,
@@ -807,7 +827,7 @@ export class LPExecutor
     this.log(`Lower tick: ${tickLower} (${lowerTickDelta} ticks from current)`);
     this.log(`Upper tick: ${tickUpper} (${upperTickDelta} ticks from current)`);
 
-    return { tickLower, tickUpper };
+    return { tickLower, tickUpper, currentTick };
   }
 
   private async getPoolAddress(
@@ -854,6 +874,10 @@ export class LPExecutor
         return 'Compounding fees...';
 
       default:
+        const method = (this as any)[action];
+        if (typeof method === 'function') {
+          return await method.apply(this, args);
+        }
         return `Unknown command: ${action}. Available commands: rebalance, compound`;
     }
   }
@@ -868,5 +892,21 @@ export class LPExecutor
     const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
     const { sqrtPriceX96 } = await poolContract.slot0();
     return BigInt(sqrtPriceX96);
+  }
+
+  public async removeLp(): Promise<void> {
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+    const positionManager = new Contract(
+      POSITION_MANAGER_ADDRESS,
+      POSITION_MANAGER_ABI,
+      wallet
+    );
+
+    for (const [tokenId, position] of this.positions) {
+      await this.removeLiquidity(tokenId, position.liquidity, positionManager);
+      this.positions.delete(tokenId);
+    }
+
+    await this.savePositions();
   }
 }

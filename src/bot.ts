@@ -63,8 +63,7 @@ function createExecutor(strategy: Strategy) {
         'token1Name' in strategy &&
         'chainId' in strategy &&
         'priceRange' in strategy &&
-        'amount0Desired' in strategy &&
-        'amount1Desired' in strategy &&
+        'totalValueInToken0' in strategy &&
         'autoCompound' in strategy &&
         'rebalance' in strategy
       ) {
