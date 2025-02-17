@@ -172,6 +172,27 @@ This strategy will:
 - Auto-compound rewards hourly if above $10
 - Rebalance position if price moves more than 5%
 
+### 4. BTC Bridge Strategy
+```json
+{
+  "strategies": [
+    {
+      "name": "BTC Bridge",
+      "key": "btcb",
+      "type": "btc-bridge",
+      "privateKeyEnvKey": "TBTC_PRIVATE_KEY",
+      "amount": "0.2",
+      "interval": 86400,
+      "btcFeeRate": 70
+    }
+  ]
+}
+```
+This strategy will:
+- Bridge 0.2 BTC every 24 hours
+- Use a fee rate of 70 sats/vB
+
+
 ## CLI Commands
 
 Once the bot is running, you can use these commands:
