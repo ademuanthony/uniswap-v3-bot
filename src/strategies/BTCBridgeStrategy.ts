@@ -9,6 +9,7 @@ import * as ecc from 'tiny-secp256k1';
 import * as bitcoin from 'bitcoinjs-lib';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { ethers } from 'ethers';
 const execPromise = promisify(exec);
 
 dotenv.config();
@@ -139,7 +140,8 @@ export class BTCBridgeExecutor
 
     console.log('Generating deposit address...');
 
-    const signer = Web3Helper.getWallet(this.getWalletPrivateKey());
+    const provider = new ethers.providers.JsonRpcProvider(process.env.TBTC_ETH_RPC);
+    const signer = new ethers.Wallet(this.getWalletPrivateKey(), provider);
 
     const sdk =
       process.env.NETWORK != 'testnet'
@@ -281,6 +283,7 @@ export class BTCBridgeExecutor
             `Still waiting... (${Math.round(attempts / 6)} minutes elapsed)`
           );
           // Check mempool status
+          // 
           try {
             const { stdout: mempoolInfo } = await execPromise(
               `bitcoin-cli getmempoolentry ${txid}`
@@ -356,6 +359,7 @@ export class BTCBridgeExecutor
   public async getDisplayInfo(): Promise<string[]> {
     return [
       `Type: BTC Bridge`,
+      `Key: ${this.strategy.key}`,
       `Amount per mint: ${this.strategy.amount} BTC`,
       `Total minted: ${this.totalMinted} BTC`,
       `Interval: ${this.strategy.interval}s`,
