@@ -148,8 +148,7 @@ This strategy will:
         "lowerBoundPercent": -10,
         "upperBoundPercent": 10
       },
-      "amount0Desired": "0.1",
-      "amount1Desired": "200",
+      "totalValueInToken0": "5",
       "autoCompound": {
         "enabled": true,
         "threshold": 0.01,
@@ -168,7 +167,7 @@ This strategy will:
 This strategy will:
 - Provide liquidity for ETH/USDC pair
 - Set price range ±10% around current price
-- Initially deposit 0.1 ETH and 200 USDC
+- Initially deposit an x amount of ETH and y amount of USDC in the pool such that the liquidity is 5 ETH
 - Auto-compound rewards hourly if above $10
 - Rebalance position if price moves more than 5%
 
