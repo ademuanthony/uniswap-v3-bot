@@ -6,7 +6,13 @@ import {
   StrategyExecutor,
   DEFAULT_SLIPPAGE,
 } from '../types/Strategy';
-import { Pool, nearestUsableTick, FeeAmount } from '@uniswap/v3-sdk';
+import {
+  Pool,
+  nearestUsableTick,
+  FeeAmount,
+  TickMath,
+  Position,
+} from '@uniswap/v3-sdk';
 import { Token } from '@uniswap/sdk-core';
 import { getTokenDecimals } from '../utils/tokenUtils';
 import * as fs from 'fs';
@@ -17,7 +23,10 @@ import { formatUnits, parseUnits } from 'ethers/lib/utils';
 import dotenv from 'dotenv';
 import { tokenAddresses } from '../tokens';
 import { POSITION_MANAGER_ABI } from '../abis/positionManager';
+import poolAbi from '../abis/pool';
 dotenv.config();
+
+const POOL_ABI = poolAbi;
 
 const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as string;
 
@@ -26,9 +35,8 @@ const FACTORY_ABI = [
   'function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)',
 ];
 
-const POOL_ABI = [
-  'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)',
-];
+
+const Q96 = BigNumber.from('79228162514264337593543950336');
 
 interface CollectedFees {
   amount0: bigint;
@@ -67,6 +75,7 @@ export class LPExecutor
     this.strategy = strategy;
     this.storageFile = path.join(this.storageDir, `${strategy.key}.json`);
     this.initStorage();
+    this.loadPositions();
   }
 
   private initStorage() {
@@ -171,8 +180,6 @@ export class LPExecutor
     this._isRunning = true;
     this.stopRequested = false;
 
-    await this.loadPositions();
-
     // Create initial position if none exist
     if (this.positions.size === 0) {
       this.log('No positions found. Creating initial position...');
@@ -266,8 +273,6 @@ export class LPExecutor
   ): Promise<void> {
     const token0Decimals = await getTokenDecimals(this.strategy.token0, wallet);
     const token1Decimals = await getTokenDecimals(this.strategy.token1, wallet);
-    this.log(`Token0 decimals: ${token0Decimals}`);
-    this.log(`Token1 decimals: ${token1Decimals}`);
 
     const pool = await this.getPool(
       this.strategy.token0,
@@ -621,12 +626,21 @@ export class LPExecutor
     const tx = await positionManager.collect(params);
     const receipt = await tx.wait();
 
-    const event = receipt.logs.find(
-      (log: {
-        eventName: string;
-        args: { amount0: bigint; amount1: bigint };
-      }) => log.eventName === 'Collect'
-    );
+    const contractInterface = new ethers.utils.Interface(POSITION_MANAGER_ABI);
+    const event = receipt.logs
+      .map((log: any) => {
+        try {
+          return contractInterface.parseLog(log);
+        } catch (e) {
+          return null;
+        }
+      })
+      .find((event: any) => event && event.name === 'Collect');
+
+    if (!event) {
+      throw new Error('Failed to find Collect event in transaction logs');
+    }
+
     return {
       amount0: event.args.amount0,
       amount1: event.args.amount1,
@@ -697,7 +711,7 @@ export class LPExecutor
     };
 
     const tx = await positionManager.decreaseLiquidity(params);
-    await tx.wait()
+    await tx.wait();
   }
 
   private getTickSpacing(fee: number): number {
@@ -853,14 +867,190 @@ export class LPExecutor
   }
 
   public async getDisplayInfo(): Promise<string[]> {
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+
+    // Get token balances and decimals
+    const [token0Decimals, token1Decimals, token0Balance, token1Balance] =
+      await Promise.all([
+        getTokenDecimals(this.strategy.token0, wallet),
+        getTokenDecimals(this.strategy.token1, wallet),
+        this.getBalance(this.strategy.token0, wallet.address),
+        this.getBalance(this.strategy.token1, wallet.address),
+      ]);
+
+    let token0Address = this.strategy.token0;
+    let token1Address = this.strategy.token1;
+
+    if (token0Address.toLowerCase() > token1Address.toLowerCase()) {
+      [token0Address, token1Address] = [token1Address, token0Address];
+    }
+
     return [
       `Type: Liquidity Pool`,
       `Key: ${this.strategy.key}`,
       `Pool: ${this.strategy.token0Symbol}-${this.strategy.token1Symbol}`,
       `Range: ${this.strategy.priceRange.lowerBoundPercent}% to +${this.strategy.priceRange.upperBoundPercent}%`,
       `Active Positions: ${this.positions.size}`,
+      `${this.strategy.token0Symbol} Balance: ${formatUnits(
+        token0Balance,
+        token0Decimals
+      )}`,
+      `${this.strategy.token1Symbol} Balance: ${formatUnits(
+        token1Balance,
+        token1Decimals
+      )}`,
       `Auto-compound: ${this.strategy.autoCompound.enabled ? 'Yes' : 'No'}`,
     ];
+  }
+
+  /**
+   * Calculate token0 amount given liquidity between two sqrt prices.
+   *
+   * Assumes: sqrtRatioAX96 <= sqrtRatioBX96.
+   *
+   * Formula:
+   *   amount0 = liquidity * (sqrtRatioBX96 - sqrtRatioAX96) * Q96 / (sqrtRatioAX96 * sqrtRatioBX96)
+   */
+  private getAmount0ForLiquidity(
+    sqrtRatioAX96: BigNumber,
+    sqrtRatioBX96: BigNumber,
+    liquidity: BigNumber
+  ): BigNumber {
+    return liquidity
+      .mul(sqrtRatioBX96.sub(sqrtRatioAX96))
+      .mul(Q96)
+      .div(sqrtRatioAX96.mul(sqrtRatioBX96));
+  }
+
+  /**
+   * Calculate token1 amount given liquidity between two sqrt prices.
+   *
+   * Assumes: sqrtRatioAX96 <= sqrtRatioBX96.
+   *
+   * Formula:
+   *   amount1 = liquidity * (sqrtRatioBX96 - sqrtRatioAX96) / Q96
+   */
+  private getAmount1ForLiquidity(
+    sqrtRatioAX96: BigNumber,
+    sqrtRatioBX96: BigNumber,
+    liquidity: BigNumber
+  ): BigNumber {
+    return liquidity.mul(sqrtRatioBX96.sub(sqrtRatioAX96)).div(Q96);
+  }
+
+  /**
+   * Calculate token amounts for a Uniswap v3 liquidity position.
+   *
+   * @param sqrtPriceX96 - The current pool sqrt price (Q64.96 format)
+   * @param tickLower - The lower tick of the position
+   * @param tickUpper - The upper tick of the position
+   * @param liquidity - The liquidity of the position
+   * @returns An object containing { amount0, amount1 } as BigNumbers.
+   */
+  private getAmountsForLiquidity(
+    sqrtPriceX96: BigNumber,
+    tickLower: number,
+    tickUpper: number,
+    liquidity: BigNumber
+  ): { amount0: BigNumber; amount1: BigNumber } {
+    // Convert ticks to sqrt prices (in Q64.96)
+    const sqrtRatioA = BigNumber.from(
+      TickMath.getSqrtRatioAtTick(tickLower).toString()
+    );
+    const sqrtRatioB = BigNumber.from(
+      TickMath.getSqrtRatioAtTick(tickUpper).toString()
+    );
+
+    let amount0: BigNumber;
+    let amount1: BigNumber;
+
+    // Case 1: current price is below the lower bound
+    if (sqrtPriceX96.lte(sqrtRatioA)) {
+      // Entire liquidity is in token0.
+      amount0 = this.getAmount0ForLiquidity(sqrtRatioA, sqrtRatioB, liquidity);
+      amount1 = BigNumber.from(0);
+    }
+    // Case 2: current price is above the upper bound
+    else if (sqrtPriceX96.gte(sqrtRatioB)) {
+      // Entire liquidity is in token1.
+      amount0 = BigNumber.from(0);
+      amount1 = this.getAmount1ForLiquidity(sqrtRatioA, sqrtRatioB, liquidity);
+    }
+    // Case 3: current price is within the range
+    else {
+      // For token0, use the current price as the lower bound.
+      amount0 = this.getAmount0ForLiquidity(
+        sqrtPriceX96,
+        sqrtRatioB,
+        liquidity
+      );
+      // For token1, use the current price as the upper bound.
+      amount1 = this.getAmount1ForLiquidity(
+        sqrtRatioA,
+        sqrtPriceX96,
+        liquidity
+      );
+    }
+
+    return { amount0, amount1 };
+  }
+
+  private getAmountsForLiquidity0(
+    sqrtRatioX96: BigNumber,
+    sqrtRatioAX96: BigNumber,
+    sqrtRatioBX96: BigNumber,
+    liquidity: BigNumber
+  ): { amount0: BigNumber; amount1: BigNumber } {
+    if (sqrtRatioAX96.gt(sqrtRatioBX96)) {
+      [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
+    }
+
+    let amount0: BigNumber;
+    let amount1: BigNumber;
+
+    if (sqrtRatioX96.lte(sqrtRatioAX96)) {
+      amount0 = this.getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, liquidity);
+      amount1 = BigNumber.from(0);
+    } else if (sqrtRatioX96.lt(sqrtRatioBX96)) {
+      amount0 = this.getAmount0Delta(sqrtRatioX96, sqrtRatioBX96, liquidity);
+      amount1 = this.getAmount1Delta(sqrtRatioAX96, sqrtRatioX96, liquidity);
+    } else {
+      amount0 = BigNumber.from(0);
+      amount1 = this.getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, liquidity);
+    }
+
+    return { amount0, amount1 };
+  }
+
+  private getAmount0Delta(
+    sqrtRatioAX96: BigNumber,
+    sqrtRatioBX96: BigNumber,
+    liquidity: BigNumber
+  ): BigNumber {
+    if (sqrtRatioAX96.gt(sqrtRatioBX96)) {
+      [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
+    }
+
+    const numerator = liquidity
+      .mul(sqrtRatioBX96.sub(sqrtRatioAX96))
+      .mul(BigNumber.from(2).pow(96));
+    const denominator = sqrtRatioBX96.mul(sqrtRatioAX96);
+
+    return numerator.div(denominator);
+  }
+
+  private getAmount1Delta(
+    sqrtRatioAX96: BigNumber,
+    sqrtRatioBX96: BigNumber,
+    liquidity: BigNumber
+  ): BigNumber {
+    if (sqrtRatioAX96.gt(sqrtRatioBX96)) {
+      [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
+    }
+
+    return liquidity
+      .mul(sqrtRatioBX96.sub(sqrtRatioAX96))
+      .div(BigNumber.from(2).pow(96));
   }
 
   public async handleCommand(action: string, args: string[]): Promise<string> {
@@ -904,6 +1094,7 @@ export class LPExecutor
 
     for (const [tokenId, position] of this.positions) {
       await this.removeLiquidity(tokenId, position.liquidity, positionManager);
+      await this.collectFees(tokenId, positionManager, wallet);
       this.positions.delete(tokenId);
     }
 
