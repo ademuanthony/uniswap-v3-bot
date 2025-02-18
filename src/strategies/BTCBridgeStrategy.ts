@@ -20,8 +20,8 @@ const FEE_RATES = {
     urgent: 7500,
   },
   mainnet: {
-    default: 15, // Normal priority
-    urgent: 30, // High priority for stuck transactions
+    default: 4, // Normal priority
+    urgent: 6, // High priority for stuck transactions
   },
 };
 
@@ -229,6 +229,8 @@ export class BTCBridgeExecutor
       this.currentDeposit.status = 'minted';
       this.totalMinted += Number(this.strategy.amount);
 
+      this.currentDeposit = undefined;
+
     } catch (error) {
       console.log(error);
       console.log('Unable to initiate mint. Make sure:');
@@ -357,9 +359,11 @@ export class BTCBridgeExecutor
   }
 
   public async getDisplayInfo(): Promise<string[]> {
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     return [
       `Type: BTC Bridge`,
       `Key: ${this.strategy.key}`,
+      `Wallet: ${wallet.address}`,
       `Amount per mint: ${this.strategy.amount} BTC`,
       `Total minted: ${this.totalMinted} BTC`,
       `Interval: ${this.strategy.interval}s`,
