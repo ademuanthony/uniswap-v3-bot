@@ -16,8 +16,8 @@ dotenv.config();
 
 const FEE_RATES = {
   testnet: {
-    default: 3500, // High rate for testnet to ensure confirmation
-    urgent: 7500,
+    default: 350, // High rate for testnet to ensure confirmation
+    urgent: 750,
   },
   mainnet: {
     default: 4, // Normal priority
