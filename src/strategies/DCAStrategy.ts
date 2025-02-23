@@ -116,7 +116,6 @@ export class DCAExecutor
 
     return [
       `Type: DCA`,
-      `Key: ${this.strategy.key}`,
       `Amount: ${this.strategy.amount} ${this.strategy.base_token}`,
       `${this.strategy.base_token} Balance: ${formatUnits(tokenInBalance, tokenInDecimals)}`,
       `${this.strategy.quote_token} Balance: ${formatUnits(tokenOutBalance, tokenOutDecimals)}`,

@@ -163,9 +163,16 @@ export class CLIManager {
         if (!state) continue;
 
         content += `${state.name}\n`;
+        content += `Key: ${key}\n`;
         content += `Status: ${state.status}\n`;
 
         try {
+          if (!strategy.isRunning()) {
+            if (content.length > 0) {
+              content += `Run '${key} start' to start the strategy\n\n`;
+            }
+            continue;
+          }
           const displayInfo = await strategy.getDisplayInfo();
           for (const line of displayInfo) {
             content += `${line}\n`;

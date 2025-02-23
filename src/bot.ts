@@ -1,6 +1,11 @@
 import { readFile } from 'fs/promises';
 import path from 'path';
-import { Config, Strategy, LPStrategy } from './types/Strategy';
+import {
+  Config,
+  Strategy,
+  LPStrategy,
+  NewTokenStrategy,
+} from './types/Strategy';
 import { DCAStrategy, DCAExecutor } from './strategies/DCAStrategy';
 import { GridStrategy, GridExecutor } from './strategies/GridStrategy';
 import { CLIManager } from './cli/CLIManager';
@@ -10,6 +15,9 @@ import { Logger } from './utils/logger';
 import { BTCBridgeExecutor } from './strategies/BTCBridgeStrategy';
 import { BTCBridgeStrategy } from './strategies/BTCBridgeStrategy';
 import { Wallet } from 'ethers';
+import { checkTokenSourceCode, getTokenSourceCode } from './utils/tokenUtils';
+import { SUPPORTED_CHAINS } from './utils/tokenUtils';
+import { NewTokenExecutor } from './strategies/NewTokenStrategy';
 
 dotenv.config();
 
@@ -82,12 +90,37 @@ function createExecutor(strategy: Strategy) {
       }
       throw new Error('Invalid BTC Bridge strategy configuration');
     }
+    case 'new-token': {
+      if (
+        'privateKeyEnvKey' in strategy &&
+        'name' in strategy &&
+        'key' in strategy &&
+        'initialBuyAmount' in strategy &&
+        'profitTargets' in strategy &&
+        'maxSlippage' in strategy &&
+        'safetyChecks' in strategy
+      ) {
+        return new NewTokenExecutor(strategy as NewTokenStrategy);
+      }
+      throw new Error('Invalid New Token strategy configuration');
+    }
     default:
       throw new Error(`Unknown strategy type: ${strategy.type}`);
   }
 }
 
+// const dontRun = true;
+
 async function main() {
+  // if (dontRun) {
+  //   const sourceCodeResponse = await checkTokenSourceCode(
+  //     SUPPORTED_CHAINS.BNBChain,
+  //     '0xa7e98b009463d4777a29f198b42e5bbd1150dc45'
+  //   );
+  //   console.log(sourceCodeResponse);
+  //   process.exit(0);
+  // }
+
   const cli = new CLIManager();
   try {
     // const pk = process.env['PRIVATE_KEY'];
@@ -115,6 +148,9 @@ async function main() {
         }
 
         const executor = createExecutor(strategy);
+        if (strategy.autoStart) {
+          executor.start();
+        }
         executor.setLogger(cli);
         await cli.registerStrategy(executor);
         cli.log(`Registered strategy: ${strategy.name}`);

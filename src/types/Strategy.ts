@@ -4,6 +4,7 @@ export interface BaseStrategy {
   name: string;
   key: string; // Add this - unique identifier for commands
   type: string;
+  autoStart: boolean;
   privateKeyEnvKey: string;
   base_token: string;
   quote_token: string;
@@ -102,4 +103,34 @@ export interface LPPosition {
   lastCompounded: number;
   timestamp: number;
   entryPrice: bigint;
+}
+
+export interface NewTokenStrategy extends BaseStrategy {
+  type: 'new_token';
+  initialBuyAmount: string; // Amount in quote token (e.g., BNB/BUSD) to buy with
+  profitTargets: {
+    firstTarget: {
+      percentage: number; // 250 for 2.5x
+      sellPercentage: number; // 75 for 75%
+    };
+    finalTarget: {
+      percentage: number; // 1000 for 10x
+      sellPercentage: number; // 100 for remaining
+    };
+  };
+  maxSlippage: number;
+  safetyChecks: {
+    minLiquidity: string; // Minimum liquidity in quote token
+    maxBuyTax: number; // Maximum acceptable buy tax percentage
+    maxSellTax: number; // Maximum acceptable sell tax percentage
+  };
+}
+
+export interface NewTokenPosition {
+  tokenAddress: string;
+  entryPrice: string;
+  amount: string;
+  timestamp: number;
+  firstTargetHit: boolean;
+  remainingAmount: string | null;
 }

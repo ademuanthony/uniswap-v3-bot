@@ -11,7 +11,6 @@ import {
   nearestUsableTick,
   FeeAmount,
   TickMath,
-  Position,
 } from '@uniswap/v3-sdk';
 import { Token } from '@uniswap/sdk-core';
 import { getTokenDecimals } from '../utils/tokenUtils';
@@ -24,17 +23,12 @@ import dotenv from 'dotenv';
 import { tokenAddresses } from '../tokens';
 import { POSITION_MANAGER_ABI } from '../abis/positionManager';
 import poolAbi from '../abis/pool';
+import UNI_TRADER_ABI from '../abis/uniTrader';
 dotenv.config();
 
 const POOL_ABI = poolAbi;
 
 const POSITION_MANAGER_ADDRESS = process.env.POSITION_MANAGER_ADDRESS as string;
-
-const FACTORY_ADDRESS = process.env.FACTORY_ADDRESS as string;
-const FACTORY_ABI = [
-  'function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)',
-];
-
 
 const Q96 = BigNumber.from('79228162514264337593543950336');
 
@@ -73,6 +67,24 @@ export class LPExecutor
   constructor(strategy: LPStrategy) {
     super();
     this.strategy = strategy;
+    // sort token0 and token1
+    if (this.strategy.token0.toLowerCase() > this.strategy.token1.toLowerCase()) {
+      [this.strategy.token0, this.strategy.token1] = [
+        this.strategy.token1,
+        this.strategy.token0,
+      ];
+
+      [this.strategy.token0Symbol, this.strategy.token1Symbol] = [
+        this.strategy.token1Symbol,
+        this.strategy.token0Symbol,
+      ];
+
+      [this.strategy.token0Name, this.strategy.token1Name] = [
+        this.strategy.token1Name,
+        this.strategy.token0Name,
+      ];
+    }
+
     this.storageFile = path.join(this.storageDir, `${strategy.key}.json`);
     this.initStorage();
     this.loadPositions();
@@ -844,16 +856,6 @@ export class LPExecutor
     return { tickLower, tickUpper, currentTick };
   }
 
-  private async getPoolAddress(
-    token0Address: string,
-    token1Address: string,
-    fee: number,
-    wallet: Wallet
-  ): Promise<string> {
-    const factory = new Contract(FACTORY_ADDRESS, FACTORY_ABI, wallet);
-    return await factory.getPool(token0Address, token1Address, fee);
-  }
-
   public getName(): string {
     return this.strategy.name;
   }
@@ -878,19 +880,32 @@ export class LPExecutor
         this.getBalance(this.strategy.token1, wallet.address),
       ]);
 
-    let token0Address = this.strategy.token0;
-    let token1Address = this.strategy.token1;
+    // const trader = new Contract(
+    //   process.env.UNI_TRADER as string,
+    //   UNI_TRADER_ABI,
+    //   wallet
+    // );
+    let amount0 = BigNumber.from(0);
+    let amount1 = BigNumber.from(0);
 
-    if (token0Address.toLowerCase() > token1Address.toLowerCase()) {
-      [token0Address, token1Address] = [token1Address, token0Address];
+    if (this.positions.size > 0) {
+      for (const [tokenId] of this.positions) {
+        try {
+          const realAmount = await this.getPositionRealAmounts(tokenId);
+          amount0 = amount0.add(realAmount[0]);
+          amount1 = amount1.add(realAmount[1]);
+        } catch (e) {
+          console.log(e);
+        }
+      }
     }
-
     return [
       `Type: Liquidity Pool`,
-      `Key: ${this.strategy.key}`,
       `Pool: ${this.strategy.token0Symbol}-${this.strategy.token1Symbol}`,
       `Range: ${this.strategy.priceRange.lowerBoundPercent}% to +${this.strategy.priceRange.upperBoundPercent}%`,
       `Active Positions: ${this.positions.size}`,
+      `Pooled ${this.strategy.token0Symbol}: ${formatUnits(amount0, token0Decimals)}`,
+      `Pooled ${this.strategy.token1Symbol}: ${formatUnits(amount1, token1Decimals)}`,
       `${this.strategy.token0Symbol} Balance: ${formatUnits(
         token0Balance,
         token0Decimals
@@ -900,6 +915,44 @@ export class LPExecutor
         token1Decimals
       )}`,
       `Auto-compound: ${this.strategy.autoCompound.enabled ? 'Yes' : 'No'}`,
+    ];
+  }
+
+  private async getPositionRealAmounts(tokenId: number): Promise<[BigNumber, BigNumber]> {
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+    const positionManager = new Contract(
+      POSITION_MANAGER_ADDRESS,
+      POSITION_MANAGER_ABI,
+      wallet
+    );
+
+    // Get position details
+    const position = await positionManager.positions(tokenId);
+    
+    // Get pool contract
+    const poolAddress = await this.getPoolAddress(
+      position.token0,
+      position.token1,
+      position.fee,
+      wallet
+    );
+    const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
+    
+    // Get current sqrt price and liquidity
+    const { sqrtPriceX96 } = await poolContract.slot0();
+
+    // Calculate amounts based on current price and position's tick range
+    const amounts = this.getAmountsForLiquidity(
+      BigNumber.from(sqrtPriceX96),
+      position.tickLower,
+      position.tickUpper,
+      BigNumber.from(position.liquidity)
+    );
+
+    // Add any uncollected fees
+    return [
+      amounts.amount0.add(position.tokensOwed0),
+      amounts.amount1.add(position.tokensOwed1)
     ];
   }
 
@@ -993,64 +1046,6 @@ export class LPExecutor
     }
 
     return { amount0, amount1 };
-  }
-
-  private getAmountsForLiquidity0(
-    sqrtRatioX96: BigNumber,
-    sqrtRatioAX96: BigNumber,
-    sqrtRatioBX96: BigNumber,
-    liquidity: BigNumber
-  ): { amount0: BigNumber; amount1: BigNumber } {
-    if (sqrtRatioAX96.gt(sqrtRatioBX96)) {
-      [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
-    }
-
-    let amount0: BigNumber;
-    let amount1: BigNumber;
-
-    if (sqrtRatioX96.lte(sqrtRatioAX96)) {
-      amount0 = this.getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, liquidity);
-      amount1 = BigNumber.from(0);
-    } else if (sqrtRatioX96.lt(sqrtRatioBX96)) {
-      amount0 = this.getAmount0Delta(sqrtRatioX96, sqrtRatioBX96, liquidity);
-      amount1 = this.getAmount1Delta(sqrtRatioAX96, sqrtRatioX96, liquidity);
-    } else {
-      amount0 = BigNumber.from(0);
-      amount1 = this.getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, liquidity);
-    }
-
-    return { amount0, amount1 };
-  }
-
-  private getAmount0Delta(
-    sqrtRatioAX96: BigNumber,
-    sqrtRatioBX96: BigNumber,
-    liquidity: BigNumber
-  ): BigNumber {
-    if (sqrtRatioAX96.gt(sqrtRatioBX96)) {
-      [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
-    }
-
-    const numerator = liquidity
-      .mul(sqrtRatioBX96.sub(sqrtRatioAX96))
-      .mul(BigNumber.from(2).pow(96));
-    const denominator = sqrtRatioBX96.mul(sqrtRatioAX96);
-
-    return numerator.div(denominator);
-  }
-
-  private getAmount1Delta(
-    sqrtRatioAX96: BigNumber,
-    sqrtRatioBX96: BigNumber,
-    liquidity: BigNumber
-  ): BigNumber {
-    if (sqrtRatioAX96.gt(sqrtRatioBX96)) {
-      [sqrtRatioAX96, sqrtRatioBX96] = [sqrtRatioBX96, sqrtRatioAX96];
-    }
-
-    return liquidity
-      .mul(sqrtRatioBX96.sub(sqrtRatioAX96))
-      .div(BigNumber.from(2).pow(96));
   }
 
   public async handleCommand(action: string, args: string[]): Promise<string> {

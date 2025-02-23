@@ -11,6 +11,12 @@ import quoterAbi from '../abis/quoter';
 import { getTokenDecimals } from '../utils/tokenUtils';
 import { formatUnits } from 'ethers/lib/utils';
 import { tokenAddresses } from '../tokens';
+import UNI_TRADER_ABI from '../abis/uniTrader';
+import { ethers } from 'ethers';
+
+const FACTORY_ABI = [
+  'function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)',
+];
 
 export abstract class BaseStrategyExecutor {
   setLogger(logger: { log: (message: string) => void }) {
@@ -21,11 +27,20 @@ export abstract class BaseStrategyExecutor {
     Logger.log(message);
   }
 
-  protected async getBalance(tokenAddress: string, walletAddress: string): Promise<BigNumber> {
-    const tokenContract = new Contract(tokenAddress, erc20Abi, Web3Helper.getProvider());
+  protected async getBalance(
+    tokenAddress: string,
+    walletAddress: string
+  ): Promise<BigNumber> {
+    const tokenContract = new Contract(
+      tokenAddress,
+      erc20Abi,
+      Web3Helper.getProvider()
+    );
     const balance = await tokenContract.balanceOf(walletAddress);
     if (tokenAddress === tokenAddresses['WETH']) {
-      const nativeBalance = await Web3Helper.getProvider().getBalance(walletAddress);
+      const nativeBalance = await Web3Helper.getProvider().getBalance(
+        walletAddress
+      );
       return nativeBalance.add(balance);
     }
     return balance;
@@ -51,7 +66,134 @@ export abstract class BaseStrategyExecutor {
     return { expectedAmountOut: quote };
   }
 
+  protected async getPoolAddress(
+    token0Address: string,
+    token1Address: string,
+    fee: number,
+    wallet: Wallet
+  ): Promise<string> {
+    const FACTORY_ADDRESS = process.env.FACTORY_ADDRESS as string;
+    const factory = new Contract(FACTORY_ADDRESS, FACTORY_ABI, wallet);
+    if (token0Address.toLowerCase() > token1Address.toLowerCase()) {
+      [token0Address, token1Address] = [token1Address, token0Address];
+    }
+    const poolAddress = await factory.getPool(
+      token0Address,
+      token1Address,
+      fee
+    );
+    return poolAddress;
+  }
+
   protected async executeSwap(params: {
+    tokenIn: string;
+    tokenOut: string;
+    amountIn: BigNumber;
+    slippage: number;
+    wallet: Wallet;
+  }) {
+    const trader = new Contract(
+      process.env.UNI_TRADER as string,
+      UNI_TRADER_ABI,
+      params.wallet
+    );
+
+    const poolAddress = await this.getPoolAddress(
+      params.tokenIn,
+      params.tokenOut,
+      3000,
+      params.wallet
+    );
+    const poolContract = new Contract(poolAddress, poolAbi, params.wallet);
+
+    const token0 = await poolContract.token0();
+    const zeroToOne = params.tokenIn === token0;
+
+    const { expectedAmountOut } = await this.getQuote(
+      params.tokenIn,
+      params.tokenOut,
+      params.amountIn,
+      params.wallet
+    );
+
+    const slippageBps = params.slippage * 100;
+    const amountOutMinimum = expectedAmountOut
+      .mul(BigNumber.from(10000 - slippageBps))
+      .div(10000);
+
+    // Check and approve token if needed
+    const tokenContract = new Contract(params.tokenIn, erc20Abi, params.wallet);
+    const allowance = await tokenContract.allowance(
+      params.wallet.address,
+      trader.address
+    );
+    if (allowance.lt(params.amountIn)) {
+      const approvalTx = await tokenContract.approve(
+        trader.address,
+        params.amountIn
+      );
+      await approvalTx.wait();
+    }
+
+    const swapData = this.encodeSwapData({
+      amountIn: params.amountIn,
+      amountOutMin: amountOutMinimum,
+      poolAddress,
+      zeroToOne,
+    });
+
+    console.log('swapData', swapData);
+
+    let value;
+    if (params.tokenIn === tokenAddresses['WETH']) {
+      value = params.amountIn;
+    }
+
+    // Execute the swap
+    const tx = await trader.swapExactInput(swapData, { value });
+    this.log(`Transaction submitted: ${tx.hash}`);
+    const receipt = await tx.wait();
+    this.log(`Transaction confirmed in block ${receipt.blockNumber}`);
+
+    return receipt;
+  }
+
+  protected encodeSwapData(params: {
+    amountIn: BigNumber;
+    amountOutMin: BigNumber;
+    poolAddress: string;
+    zeroToOne: boolean;
+  }): string {
+    // Encode amounts to 32 bytes each
+    const amountInBytes = ethers.utils.zeroPad(
+      ethers.utils.arrayify(params.amountIn),
+      32
+    );
+
+    const amountOutMinBytes = ethers.utils.zeroPad(
+      ethers.utils.arrayify(params.amountOutMin),
+      32
+    );
+
+    // Get pool address bytes (20 bytes)
+    const poolAddressBytes = ethers.utils.arrayify(params.poolAddress);
+
+    // Create a single byte for the direction
+    const directionByte = new Uint8Array(1);
+    directionByte[0] = params.zeroToOne ? 0x01 : 0x00;
+
+    // Concatenate everything: amountIn (32) + amountOutMin (32) + poolAddress (20) + direction (1)
+    return ethers.utils.hexlify(
+      ethers.utils.concat([
+        amountInBytes,
+        amountOutMinBytes,
+        poolAddressBytes,
+        directionByte,
+      ])
+    );
+  }
+
+  protected async executeSwap2(params: {
     tokenIn: string;
     tokenOut: string;
     amountIn: BigNumber;
