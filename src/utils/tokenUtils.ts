@@ -237,7 +237,8 @@ export async function checkTokenSourceCode(
   1b. Is there a \`_mint\` function that can be called externally (even if not directly public)? If so, explain how it could be used. (true/false)
   1c. Is there any function that increases the \`totalSupply\` without a corresponding transfer of tokens to an address? (true/false)
   If any of the above are true, provide the relevant function signatures and explain the potential risks.
-  
+
+  2. Is there any assembly code in the contract? (true/false)
   2. Hidden mint functions: Sometimes mint functions can be disguised. If true, show how it is called in comments (true/false)
   
   3a. Does the contract have buy/sell tax? (true/false)
@@ -269,6 +270,7 @@ export async function checkTokenSourceCode(
   "mintingEnabled": boolean,
   "hiddenMintFunctions": boolean,
   "hasBuySellTax": boolean,
+  "hasAssemblyCode": boolean,
   "canBlacklist": boolean,
   "isSafe": boolean,
   "hasHoneypotCode": boolean,

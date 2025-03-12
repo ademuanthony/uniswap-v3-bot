@@ -140,9 +140,8 @@ export abstract class BaseStrategyExecutor {
       amountOutMin: amountOutMinimum,
       poolAddress,
       zeroToOne,
+      poolVersion: 0x03
     });
-
-    console.log('swapData', swapData);
 
     let value;
     if (params.tokenIn === tokenAddresses['WETH']) {
@@ -163,6 +162,7 @@ export abstract class BaseStrategyExecutor {
     amountOutMin: BigNumber;
     poolAddress: string;
     zeroToOne: boolean;
+    poolVersion: number;
   }): string {
     // Encode amounts to 32 bytes each
     const amountInBytes = ethers.utils.zeroPad(
@@ -181,14 +181,19 @@ export abstract class BaseStrategyExecutor {
     // Create a single byte for the direction
     const directionByte = new Uint8Array(1);
     directionByte[0] = params.zeroToOne ? 0x01 : 0x00;
+    let a = 0x01;
 
-    // Concatenate everything: amountIn (32) + amountOutMin (32) + poolAddress (20) + direction (1)
+    const poolVersionByte = new Uint8Array(1);
+    poolVersionByte[0] = params.poolVersion;
+
+    // Concatenate everything: amountIn (32) + amountOutMin (32) + poolAddress (20) + direction (1) + poolVersion (1)
     return ethers.utils.hexlify(
       ethers.utils.concat([
         amountInBytes,
         amountOutMinBytes,
         poolAddressBytes,
         directionByte,
+        poolVersionByte
       ])
     );
   }

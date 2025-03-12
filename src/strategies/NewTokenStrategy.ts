@@ -22,6 +22,7 @@ interface TokenSafetyCheck {
   hasBackdoors: boolean;
   buyTaxPercentage: number;
   sellTaxPercentage: number;
+  hasAssemblyCode: boolean;
 }
 
 export class NewTokenExecutor
@@ -134,6 +135,7 @@ export class NewTokenExecutor
         !safetyCheck.isSafe ||
         safetyCheck.hasHoneypotCode ||
         safetyCheck.hasBackdoors ||
+        safetyCheck.hasAssemblyCode ||
         safetyCheck.buyTaxPercentage > this.strategy.safetyChecks.maxBuyTax ||
         safetyCheck.sellTaxPercentage > this.strategy.safetyChecks.maxSellTax
       ) {

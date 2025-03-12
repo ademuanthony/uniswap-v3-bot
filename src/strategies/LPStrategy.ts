@@ -6,12 +6,7 @@ import {
   StrategyExecutor,
   DEFAULT_SLIPPAGE,
 } from '../types/Strategy';
-import {
-  Pool,
-  nearestUsableTick,
-  FeeAmount,
-  TickMath,
-} from '@uniswap/v3-sdk';
+import { Pool, nearestUsableTick, FeeAmount, TickMath } from '@uniswap/v3-sdk';
 import { Token } from '@uniswap/sdk-core';
 import { getTokenDecimals } from '../utils/tokenUtils';
 import * as fs from 'fs';
@@ -68,7 +63,9 @@ export class LPExecutor
     super();
     this.strategy = strategy;
     // sort token0 and token1
-    if (this.strategy.token0.toLowerCase() > this.strategy.token1.toLowerCase()) {
+    if (
+      this.strategy.token0.toLowerCase() > this.strategy.token1.toLowerCase()
+    ) {
       [this.strategy.token0, this.strategy.token1] = [
         this.strategy.token1,
         this.strategy.token0,
@@ -705,7 +702,13 @@ export class LPExecutor
     );
 
     // Remove liquidity from current position
-    await this.removeLiquidity(tokenId, position.liquidity, positionManager);
+    const removed = await this.removeLiquidity(
+      tokenId,
+      position.liquidity,
+      positionManager
+    );
+    if (!removed) return;
+    this.log(`Removed liquidity from position ${tokenId}`);
     await this.createPosition(positionManager, wallet);
   }
 
@@ -713,7 +716,33 @@ export class LPExecutor
     tokenId: number,
     liquidity: bigint,
     positionManager: Contract
-  ): Promise<void> {
+  ): Promise<boolean> {
+    // Check if position manager is approved to manage this NFT
+    const owner = await positionManager.ownerOf(tokenId);
+    let isApproved = await positionManager.isApprovedForAll(
+      owner,
+      POSITION_MANAGER_ADDRESS
+    );
+
+    if (!isApproved) {
+      this.log(`Approving position manager for token ${tokenId}`);
+      const approveTx = await positionManager.setApprovalForAll(
+        POSITION_MANAGER_ADDRESS,
+        true
+      );
+      await approveTx.wait();
+      this.log(`Approved position manager for token ${tokenId}`);
+
+      isApproved = await positionManager.isApprovedForAll(
+        owner,
+        POSITION_MANAGER_ADDRESS
+      );
+      if (!isApproved) {
+        this.log(`Failed to approve position manager for token ${tokenId}`);
+        return false;
+      }
+    }
+
     const params = {
       tokenId,
       liquidity,
@@ -722,8 +751,12 @@ export class LPExecutor
       deadline: Math.floor(Date.now() / 1000) + 1800,
     };
 
+    this.log(`Removing liquidity from position ${tokenId}`);
+
     const tx = await positionManager.decreaseLiquidity(params);
     await tx.wait();
+
+    return true;
   }
 
   private getTickSpacing(fee: number): number {
@@ -904,8 +937,14 @@ export class LPExecutor
       `Pool: ${this.strategy.token0Symbol}-${this.strategy.token1Symbol}`,
       `Range: ${this.strategy.priceRange.lowerBoundPercent}% to +${this.strategy.priceRange.upperBoundPercent}%`,
       `Active Positions: ${this.positions.size}`,
-      `Pooled ${this.strategy.token0Symbol}: ${formatUnits(amount0, token0Decimals)}`,
-      `Pooled ${this.strategy.token1Symbol}: ${formatUnits(amount1, token1Decimals)}`,
+      `Pooled ${this.strategy.token0Symbol}: ${formatUnits(
+        amount0,
+        token0Decimals
+      )}`,
+      `Pooled ${this.strategy.token1Symbol}: ${formatUnits(
+        amount1,
+        token1Decimals
+      )}`,
       `${this.strategy.token0Symbol} Balance: ${formatUnits(
         token0Balance,
         token0Decimals
@@ -918,7 +957,9 @@ export class LPExecutor
     ];
   }
 
-  private async getPositionRealAmounts(tokenId: number): Promise<[BigNumber, BigNumber]> {
+  private async getPositionRealAmounts(
+    tokenId: number
+  ): Promise<[BigNumber, BigNumber]> {
     const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     const positionManager = new Contract(
       POSITION_MANAGER_ADDRESS,
@@ -928,7 +969,7 @@ export class LPExecutor
 
     // Get position details
     const position = await positionManager.positions(tokenId);
-    
+
     // Get pool contract
     const poolAddress = await this.getPoolAddress(
       position.token0,
@@ -937,7 +978,7 @@ export class LPExecutor
       wallet
     );
     const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
-    
+
     // Get current sqrt price and liquidity
     const { sqrtPriceX96 } = await poolContract.slot0();
 
@@ -952,7 +993,7 @@ export class LPExecutor
     // Add any uncollected fees
     return [
       amounts.amount0.add(position.tokensOwed0),
-      amounts.amount1.add(position.tokensOwed1)
+      amounts.amount1.add(position.tokensOwed1),
     ];
   }
 

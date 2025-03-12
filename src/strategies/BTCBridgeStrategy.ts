@@ -16,8 +16,8 @@ dotenv.config();
 
 const FEE_RATES = {
   testnet: {
-    default: 350, // High rate for testnet to ensure confirmation
-    urgent: 750,
+    default: 950, // High rate for testnet to ensure confirmation
+    urgent: 1500,
   },
   mainnet: {
     default: 4, // Normal priority
@@ -112,6 +112,8 @@ export class BTCBridgeExecutor
   }
 
   private async startNewDeposit(amount: string): Promise<void> {
+    if (this.currentDeposit) return
+
     console.log('Generating recovery address...');
     const ECPair = ECPairFactory(ecc);
     const keyPair = ECPair.makeRandom();
@@ -220,6 +222,9 @@ export class BTCBridgeExecutor
       }
     }
 
+    // wait for fee seconds before minting
+    await new Promise((resolve) => setTimeout(resolve, 10 * 1000));
+
     // Attempt minting
     try {
       const txHash = await this.currentDeposit.deposit?.initiateMinting();
@@ -265,7 +270,7 @@ export class BTCBridgeExecutor
     let attempts = 0;
     const maxAttempts = 60 * 60; // Will wait up to 1 hour
   
-    while (confirmations < 1 && attempts < maxAttempts) {
+    while (confirmations < 2 && attempts < maxAttempts) {
       try {
         const { stdout } = await execPromise(
           `bitcoin-cli gettransaction ${txid}`
@@ -273,7 +278,7 @@ export class BTCBridgeExecutor
         const txInfo = JSON.parse(stdout);
         confirmations = txInfo.confirmations || 0;
   
-        if (confirmations >= 1) {
+        if (confirmations >= 2) {
           console.log('Transaction confirmed!');
           return true;
         }

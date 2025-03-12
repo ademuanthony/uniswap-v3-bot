@@ -134,3 +134,16 @@ export interface NewTokenPosition {
   firstTargetHit: boolean;
   remainingAmount: string | null;
 }
+
+interface TokenSafetyCheck {
+  mintingEnabled: boolean;
+  hiddenMintFunctions: boolean;
+  hasBuySellTax: boolean;
+  canBlacklist: boolean;
+  isSafe: boolean;
+  hasHoneypotCode: boolean;
+  hasBackdoors: boolean;
+  hasAssemblyCode: boolean;
+  buyTaxPercentage: number;
+  sellTaxPercentage: number;
+}
