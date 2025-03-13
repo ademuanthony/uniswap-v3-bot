@@ -10,6 +10,7 @@ import * as bitcoin from 'bitcoinjs-lib';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { ethers } from 'ethers';
+import fs from 'fs';
 const execPromise = promisify(exec);
 
 dotenv.config();
@@ -112,7 +113,7 @@ export class BTCBridgeExecutor
   }
 
   private async startNewDeposit(amount: string): Promise<void> {
-    if (this.currentDeposit) return
+    if (this.currentDeposit) return;
 
     console.log('Generating recovery address...');
     const ECPair = ECPairFactory(ecc);
@@ -142,7 +143,9 @@ export class BTCBridgeExecutor
 
     console.log('Generating deposit address...');
 
-    const provider = new ethers.providers.JsonRpcProvider(process.env.TBTC_ETH_RPC);
+    const provider = new ethers.providers.JsonRpcProvider(
+      process.env.TBTC_ETH_RPC
+    );
     const signer = new ethers.Wallet(this.getWalletPrivateKey(), provider);
 
     const sdk =
@@ -225,28 +228,49 @@ export class BTCBridgeExecutor
     // wait for fee seconds before minting
     await new Promise((resolve) => setTimeout(resolve, 10 * 1000));
 
-    // Attempt minting
-    try {
-      const txHash = await this.currentDeposit.deposit?.initiateMinting();
-      console.log(`Mint initiated. TxHash: \n${txHash}`);
+    let retries = 0;
 
-      this.currentDeposit.mintTxHash = txHash;
-      this.currentDeposit.status = 'minted';
-      this.totalMinted += Number(this.strategy.amount);
+    while (true) {
+      // Attempt minting
+      try {
+        if (!this.currentDeposit?.deposit) {
+          return;
+        }
+        const txHash = await this.currentDeposit.deposit?.initiateMinting();
+        console.log(`Mint initiated. TxHash: \n${txHash}`);
 
-      this.currentDeposit = undefined;
+        this.currentDeposit.mintTxHash = txHash;
+        this.currentDeposit.status = 'minted';
+        this.totalMinted += Number(this.strategy.amount);
 
-    } catch (error) {
-      console.log(error);
-      console.log('Unable to initiate mint. Make sure:');
-      console.log('1. BTC has been sent to the deposit address');
-      console.log('2. Transaction has at least 1 confirmation');
-      console.log('3. You have enough ETH for gas fees');
+        this.currentDeposit = undefined;
+        retries = 0;
+        return;
+      } catch (error) {
+        this.log(`Mint failed. Retrying... (${retries + 1}/10)`);
+        await new Promise((resolve) => setTimeout(resolve, 60 * 1000));
+        retries++;
+        if (retries >= 10) {
+          console.log(error);
+          console.log('Unable to initiate mint. Make sure:');
+          console.log('1. BTC has been sent to the deposit address');
+          console.log('2. Transaction has at least 1 confirmation');
+          console.log('3. You have enough ETH for gas fees');
+          let backupKey = `./.data/backups/${this.currentDeposit?.bitcoinTxHash?.slice(0, 10)}.json`;
+          fs.writeFileSync(
+            backupKey,
+            JSON.stringify(this.currentDeposit, null, 2)
+          );
+
+          this.log(`Backup saved to ${backupKey}`);
+          return;
+        }
+      }
     }
   }
 
   private async handleMintCommand(args: string[]) {
-    if(this.currentDeposit) {
+    if (this.currentDeposit) {
       console.log('Mint already in progress');
       return;
     }
@@ -269,7 +293,7 @@ export class BTCBridgeExecutor
     let confirmations = 0;
     let attempts = 0;
     const maxAttempts = 60 * 60; // Will wait up to 1 hour
-  
+
     while (confirmations < 2 && attempts < maxAttempts) {
       try {
         const { stdout } = await execPromise(
@@ -277,12 +301,12 @@ export class BTCBridgeExecutor
         );
         const txInfo = JSON.parse(stdout);
         confirmations = txInfo.confirmations || 0;
-  
+
         if (confirmations >= 2) {
           console.log('Transaction confirmed!');
           return true;
         }
-  
+
         attempts++;
         if (attempts % 6 === 0) {
           // Every minute
@@ -290,7 +314,7 @@ export class BTCBridgeExecutor
             `Still waiting... (${Math.round(attempts / 6)} minutes elapsed)`
           );
           // Check mempool status
-          // 
+          //
           try {
             const { stdout: mempoolInfo } = await execPromise(
               `bitcoin-cli getmempoolentry ${txid}`
@@ -306,14 +330,14 @@ export class BTCBridgeExecutor
             console.log('Error checking mempool status:', e);
           }
         }
-  
+
         await new Promise((resolve) => setTimeout(resolve, 10000)); // Wait 10 seconds between checks
       } catch (error) {
         console.log('Error checking transaction status:', error);
         return false;
       }
     }
-  
+
     if (attempts >= maxAttempts) {
       console.log('\nTransaction still unconfirmed after 10 minutes.');
       console.log('You can:');
@@ -326,7 +350,7 @@ export class BTCBridgeExecutor
       );
       return false;
     }
-  
+
     return false;
   }
 
