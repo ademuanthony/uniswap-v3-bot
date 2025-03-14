@@ -293,7 +293,7 @@ export class BTCBridgeExecutor
         this.currentDeposit.status = 'minted';
         this.totalMinted += Number(this.strategy.amount);
 
-        let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress}.json`;
+        let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress.slice(0, 10)}.json`;
         if (fs.existsSync(backupKey)) {
           // delete backup
           fs.unlinkSync(backupKey);
@@ -465,21 +465,6 @@ export class BTCBridgeExecutor
         ),
       };
 
-      // Log the reconstructed receipt for debugging
-      this.log(
-        'Reconstructed receipt:' +
-          JSON.stringify(
-            reconstructedReceipt,
-            (key, value) => {
-              if (value instanceof Hex) {
-                return `0x${value.toString()}`;
-              }
-              return value;
-            },
-            2
-          )
-      );
-
       // Reconstruct the TBTC deposit object
       const provider = new ethers.providers.JsonRpcProvider(
         process.env.TBTC_ETH_RPC
@@ -512,9 +497,9 @@ export class BTCBridgeExecutor
   }
 
   public async clearBackups(): Promise<string> {
-    const backups = fs.readdirSync('./.data/backups');
+    const backups = fs.readdirSync(`${this.storageDir}`);
     backups.forEach((backup) => {
-      fs.unlinkSync(`./.data/backups/${backup}`);
+      fs.unlinkSync(`${this.storageDir}/${backup}`);
     });
     return 'Backups cleared';
   }
