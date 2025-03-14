@@ -3,11 +3,17 @@ import { BaseStrategyExecutor } from './BaseStrategyExecutor';
 import { Web3Helper } from '../utils/web3';
 import dotenv from 'dotenv';
 
-import { Deposit, Hex, TBTC, DepositReceipt } from '@keep-network/tbtc-v2.ts';
+import {
+  Deposit,
+  Hex,
+  TBTC,
+  DepositReceipt,
+  ChainIdentifier,
+} from '@keep-network/tbtc-v2.ts';
 import ECPairFactory from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
 import * as bitcoin from 'bitcoinjs-lib';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { ethers } from 'ethers';
 import fs from 'fs';
@@ -79,6 +85,33 @@ export class BTCBridgeExecutor
     }
   }
 
+  private async backupDeposit() {
+    if (!this.currentDeposit?.deposit) {
+      return;
+    }
+
+    try {
+      const receipt = this.currentDeposit.deposit.getReceipt();
+      // Store the complete receipt without modification
+      const backupData = {
+        receipt,
+        currentDeposit: this.currentDeposit,
+      };
+
+      const backupKey = `${
+        this.storageDir
+      }/${this.currentDeposit.bitcoinRecoveryAddress?.slice(0, 10)}.json`;
+      fs.writeFileSync(backupKey, JSON.stringify(backupData, null, 2));
+      this.log(`Backup saved to ${backupKey}`);
+    } catch (error) {
+      this.log(
+        `Error creating backup: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
   protected override log(message: string) {
     super.log(`[${this.strategy.key}] ${message}`);
   }
@@ -106,9 +139,7 @@ export class BTCBridgeExecutor
     }
     this._isRunning = false;
     if (this.currentDeposit) {
-      let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress?.slice(0, 10)}.json`;
-      fs.writeFileSync(backupKey, JSON.stringify(this.currentDeposit, null, 2));
-      this.log(`Backup saved to ${backupKey}`);
+      this.backupDeposit();
     }
   }
 
@@ -228,7 +259,6 @@ export class BTCBridgeExecutor
         console.log(`Transaction initiated! TXID: ${txid}`);
         this.currentDeposit.bitcoinTxHash = txid;
         this.currentDeposit.status = 'bitcoin sent';
-
       } catch (error) {
         console.log('Error executing bitcoin-cli command:', error);
         return;
@@ -236,7 +266,12 @@ export class BTCBridgeExecutor
     }
 
     // Wait for confirmation
-    if (!(await this.waitForTransactionConfirmation(this.currentDeposit.bitcoinTxHash, execPromise))) {
+    if (
+      !(await this.waitForTransactionConfirmation(
+        this.currentDeposit.bitcoinTxHash,
+        execPromise
+      ))
+    ) {
       return;
     }
 
@@ -268,6 +303,7 @@ export class BTCBridgeExecutor
         retries = 0;
         return;
       } catch (error) {
+        console.log(error);
         this.log(`Mint failed. Retrying... (${retries + 1}/10)`);
         await new Promise((resolve) => setTimeout(resolve, 60 * 1000));
         retries++;
@@ -277,13 +313,7 @@ export class BTCBridgeExecutor
           console.log('1. BTC has been sent to the deposit address');
           console.log('2. Transaction has at least 1 confirmation');
           console.log('3. You have enough ETH for gas fees');
-          let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress}.json`;
-          fs.writeFileSync(
-            backupKey,
-            JSON.stringify(this.currentDeposit, null, 2)
-          );
-
-          this.log(`Backup saved to ${backupKey}`);
+          this.backupDeposit();
           return;
         }
       }
@@ -401,14 +431,84 @@ export class BTCBridgeExecutor
   }
 
   public async resumeFromBackup(backupKey: string): Promise<string> {
-    let fileName = `./.data/backups/${backupKey}.json`;
+    let fileName = `${this.storageDir}/${backupKey}.json`;
     if (!fs.existsSync(fileName)) {
       return 'Backup file does not exist';
     }
-    const backup = JSON.parse(fs.readFileSync(fileName, 'utf8')) as DepositState;
-    this.currentDeposit = backup;
-    await this.triggerMint();
-    return 'Resume command executed';
+
+    try {
+      const backup = JSON.parse(fs.readFileSync(fileName, 'utf8'));
+
+      if (!backup.receipt || !backup.currentDeposit?.bitcoinRecoveryAddress) {
+        return 'Backup file does not contain a valid deposit receipt';
+      }
+
+      // Convert Buffer data arrays to Hex type using Hex.from()
+      const reconstructedReceipt: DepositReceipt = {
+        depositor: {
+          identifierHex: backup.receipt.depositor.identifierHex,
+          equals: function (other: ChainIdentifier): boolean {
+            return this.identifierHex === other.identifierHex;
+          },
+        },
+        blindingFactor: Hex.from(
+          Buffer.from(backup.receipt.blindingFactor._hex.data)
+        ),
+        walletPublicKeyHash: Hex.from(
+          Buffer.from(backup.receipt.walletPublicKeyHash._hex.data)
+        ),
+        refundPublicKeyHash: Hex.from(
+          Buffer.from(backup.receipt.refundPublicKeyHash._hex.data)
+        ),
+        refundLocktime: Hex.from(
+          Buffer.from(backup.receipt.refundLocktime._hex.data)
+        ),
+      };
+
+      // Log the reconstructed receipt for debugging
+      this.log(
+        'Reconstructed receipt:' +
+          JSON.stringify(
+            reconstructedReceipt,
+            (key, value) => {
+              if (value instanceof Hex) {
+                return `0x${value.toString()}`;
+              }
+              return value;
+            },
+            2
+          )
+      );
+
+      // Reconstruct the TBTC deposit object
+      const provider = new ethers.providers.JsonRpcProvider(
+        process.env.TBTC_ETH_RPC
+      );
+      const signer = new ethers.Wallet(this.getWalletPrivateKey(), provider);
+
+      const sdk =
+        process.env.NETWORK != 'testnet'
+          ? await TBTC.initializeMainnet(signer)
+          : await TBTC.initializeSepolia(signer);
+
+      // Use the reconstructed receipt
+      const deposit = await Deposit.fromReceipt(
+        reconstructedReceipt,
+        sdk.tbtcContracts,
+        sdk.bitcoinClient
+      );
+      backup.currentDeposit.deposit = deposit;
+
+      this.currentDeposit = backup.currentDeposit as DepositState;
+      this.log('Successfully restored deposit from backup');
+      await this.triggerMint();
+      return 'Resume command executed';
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.log(`Error resuming from backup: ${errorMessage}`);
+      return `Failed to resume from backup: ${errorMessage}`;
+    }
   }
 
   public async clearBackups(): Promise<string> {
