@@ -65,10 +65,18 @@ export class BTCBridgeExecutor
   private interval?: NodeJS.Timeout;
   private currentDeposit?: DepositState;
   private totalMinted: number = 0;
+  private storageDir = './.data/btc_bridge';
 
   constructor(strategy: BTCBridgeStrategy) {
     super();
     this.strategy = strategy;
+    this.initStorage();
+  }
+
+  private initStorage() {
+    if (!fs.existsSync(this.storageDir)) {
+      fs.mkdirSync(this.storageDir, { recursive: true });
+    }
   }
 
   protected override log(message: string) {
@@ -91,11 +99,17 @@ export class BTCBridgeExecutor
   }
 
   stop(): void {
+    this.log('Stopping BTC Bridge strategy...');
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = undefined;
     }
     this._isRunning = false;
+    if (this.currentDeposit) {
+      let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress?.slice(0, 10)}.json`;
+      fs.writeFileSync(backupKey, JSON.stringify(this.currentDeposit, null, 2));
+      this.log(`Backup saved to ${backupKey}`);
+    }
   }
 
   isRunning(): boolean {
@@ -215,14 +229,15 @@ export class BTCBridgeExecutor
         this.currentDeposit.bitcoinTxHash = txid;
         this.currentDeposit.status = 'bitcoin sent';
 
-        // Wait for confirmation
-        if (!(await this.waitForTransactionConfirmation(txid, execPromise))) {
-          return;
-        }
       } catch (error) {
         console.log('Error executing bitcoin-cli command:', error);
         return;
       }
+    }
+
+    // Wait for confirmation
+    if (!(await this.waitForTransactionConfirmation(this.currentDeposit.bitcoinTxHash, execPromise))) {
+      return;
     }
 
     // wait for fee seconds before minting
@@ -243,6 +258,12 @@ export class BTCBridgeExecutor
         this.currentDeposit.status = 'minted';
         this.totalMinted += Number(this.strategy.amount);
 
+        let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress}.json`;
+        if (fs.existsSync(backupKey)) {
+          // delete backup
+          fs.unlinkSync(backupKey);
+        }
+
         this.currentDeposit = undefined;
         retries = 0;
         return;
@@ -256,7 +277,7 @@ export class BTCBridgeExecutor
           console.log('1. BTC has been sent to the deposit address');
           console.log('2. Transaction has at least 1 confirmation');
           console.log('3. You have enough ETH for gas fees');
-          let backupKey = `./.data/backups/${this.currentDeposit?.bitcoinTxHash?.slice(0, 10)}.json`;
+          let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress}.json`;
           fs.writeFileSync(
             backupKey,
             JSON.stringify(this.currentDeposit, null, 2)
@@ -370,9 +391,32 @@ export class BTCBridgeExecutor
       case 'mint':
         await this.handleMintCommand(args);
         return 'Mint command executed';
+      case 'resume':
+        return await this.resumeFromBackup(args[0]);
+      case 'clearbackups':
+        return await this.clearBackups();
       default:
-        return `Unknown command: ${action}. Available commands: status, mint`;
+        return `Unknown command: ${action}. Available commands: status, mint, resume, clearbackups`;
     }
+  }
+
+  public async resumeFromBackup(backupKey: string): Promise<string> {
+    let fileName = `./.data/backups/${backupKey}.json`;
+    if (!fs.existsSync(fileName)) {
+      return 'Backup file does not exist';
+    }
+    const backup = JSON.parse(fs.readFileSync(fileName, 'utf8')) as DepositState;
+    this.currentDeposit = backup;
+    await this.triggerMint();
+    return 'Resume command executed';
+  }
+
+  public async clearBackups(): Promise<string> {
+    const backups = fs.readdirSync('./.data/backups');
+    backups.forEach((backup) => {
+      fs.unlinkSync(`./.data/backups/${backup}`);
+    });
+    return 'Backups cleared';
   }
 
   public getName(): string {
