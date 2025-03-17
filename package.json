@@ -46,6 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/snarkjs": "^0.7.9",
     "typescript": "^5.7.3"
   }
 }
