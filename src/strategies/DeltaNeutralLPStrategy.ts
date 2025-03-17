@@ -10,8 +10,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { getAccount, getAssociatedTokenAddress } from '@solana/spl-token';
-import { AnchorProvider, Wallet } from '@project-serum/anchor';
-import { DriftClient } from '@drift-labs/sdk';
+import { Wallet } from '@project-serum/anchor';
 import { fetch } from 'cross-fetch';
 import Decimal from 'decimal.js';
 import {
@@ -27,7 +26,7 @@ import {
   PoolInfo,
   swapInstructions,
 } from '@orca-so/whirlpools';
-import { SOL } from '@raydium-io/raydium-sdk';
+import Binance from 'binance-api-node';
 
 export interface DeltaNeutralLPConfig extends BaseStrategy {
   type: 'delta_neutral_lp';
@@ -37,6 +36,16 @@ export interface DeltaNeutralLPConfig extends BaseStrategy {
   // Connection details
   rpcUrl: string;
   privateKeyEnvKey: string;
+
+  // Binance API configuration
+  binanceApiKeyEnv: string;
+  binanceApiSecretEnv: string;
+  binanceTestnet: boolean;
+
+  // Telegram configuration
+  telegramBotTokenEnv: string;
+  telegramChatIds: string[]; // Array of authorized chat IDs
+  telegramEnabled: boolean;
 
   usdcMint: string;
 
@@ -48,6 +57,7 @@ export interface DeltaNeutralLPConfig extends BaseStrategy {
 
   // Hedge configuration
   keepHedgeAboveEntry: boolean; // Whether to maintain hedge when price > entry
+  hedgeLeverage: number; // Leverage for Binance perp position
 
   // Rebalance configuration for out-of-range scenarios
   lowerMoveLowerBound: number; // New lower bound when price moves down
@@ -58,7 +68,7 @@ export interface DeltaNeutralLPConfig extends BaseStrategy {
 
 interface PositionState {
   positionMint?: string;
-  perpPositionId?: string;
+  binancePerpPositionId?: string;
   entryPrice: number;
   currentPrice: number;
   solInPool: number;
@@ -102,7 +112,7 @@ export const getTokenBalance = async (
     const info = await getAccount(connection, ata);
     return Number(info.amount);
   } catch (err) {
-    // console.log(err)
+    console.log(`Error getting token balance: ${err}`);
   }
 
   return 0;
@@ -116,6 +126,50 @@ export const getSolBalance = async (
   return balance;
 };
 
+interface Lock {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+class LockManager {
+  private locks: Map<string, Lock | null> = new Map();
+
+  async acquire(lockName: string): Promise<void> {
+    const existingLock = this.locks.get(lockName);
+    if (existingLock) {
+      // Wait for the existing lock to be released
+      await existingLock.promise;
+    }
+
+    // Create a new lock
+    let resolve: () => void;
+    let reject: (error: Error) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+
+    this.locks.set(lockName, { promise, resolve: resolve!, reject: reject! });
+  }
+
+  release(lockName: string, error?: Error): void {
+    const lock = this.locks.get(lockName);
+    if (lock) {
+      if (error) {
+        lock.reject(error);
+      } else {
+        lock.resolve();
+      }
+      this.locks.set(lockName, null);
+    }
+  }
+
+  isLocked(lockName: string): boolean {
+    return this.locks.get(lockName) !== null;
+  }
+}
+
 export class DeltaNeutralLPExecutor
   extends BaseStrategyExecutor
   implements StrategyExecutor
@@ -124,18 +178,23 @@ export class DeltaNeutralLPExecutor
   private _isRunning: boolean = false;
   private priceMonitor?: NodeJS.Timeout;
   private position?: PositionState;
+  private binanceClient: ReturnType<typeof Binance>;
+  private lockManager: LockManager;
+  private readonly TELEGRAM_API_URL = 'https://api.telegram.org/bot';
 
   private connection: Connection;
   private transactionExecutor: TransactionExecutor;
   private wallet: Wallet;
-  private driftClient?: DriftClient;
   private orcaPool?: PoolInfo;
+  // private readonly orcaPoolAddress: string = 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE';
   private readonly JUPITER_API_URL = 'https://quote-api.jup.ag/v6';
 
   constructor(config: DeltaNeutralLPConfig) {
     super();
     this.config = config;
+    this.validateConfig();
     this.connection = new Connection(config.rpcUrl, 'confirmed');
+
     const privateKeyBuffer = Buffer.from(
       process.env[config.privateKeyEnvKey] || '',
       'base64'
@@ -143,6 +202,28 @@ export class DeltaNeutralLPExecutor
     const keypair = Keypair.fromSecretKey(privateKeyBuffer);
     this.wallet = new Wallet(keypair);
 
+    const binanceApiKey = process.env[config.binanceApiKeyEnv] || '';
+    const binanceApiSecret = process.env[config.binanceApiSecretEnv] || '';
+
+    // Initialize Binance client
+    this.binanceClient = Binance({
+      apiKey: binanceApiKey,
+      apiSecret: binanceApiSecret,
+      httpBase: this.config.binanceTestnet
+        ? 'https://testnet.binance.vision'
+        : 'https://api.binance.com',
+      httpFutures: this.config.binanceTestnet
+        ? 'https://testnet.binancefuture.com'
+        : 'https://fapi.binance.com',
+      wsBase: this.config.binanceTestnet
+        ? 'wss://testnet.binance.vision'
+        : 'wss://stream.binance.com',
+      wsFutures: this.config.binanceTestnet
+        ? 'wss://stream.binancefuture.com'
+        : 'wss://fstream.binance.com',
+    });
+
+    // Initialize transaction executor
     switch (config.transactionExecutor) {
       case 'jito':
         this.transactionExecutor = new JitoTransactionExecutor(
@@ -161,13 +242,134 @@ export class DeltaNeutralLPExecutor
         );
     }
 
+    this.lockManager = new LockManager();
     this.initClients();
   }
 
+  private validateConfig(): void {
+    const errors: string[] = [];
+
+    // Validate required fields
+    if (!this.config.rpcUrl) {
+      errors.push('RPC URL is required');
+    }
+
+    if (!this.config.privateKeyEnvKey) {
+      errors.push('Private key environment variable key is required');
+    }
+
+    if (!process.env[this.config.privateKeyEnvKey]) {
+      errors.push(
+        `Private key not found in environment variable: ${this.config.privateKeyEnvKey}`
+      );
+    }
+
+    if (!this.config.binanceApiKeyEnv) {
+      errors.push('Binance API key environment variable key is required');
+    }
+
+    if (!process.env[this.config.binanceApiKeyEnv]) {
+      errors.push(
+        `Binance API key not found in environment variable: ${this.config.binanceApiKeyEnv}`
+      );
+    }
+
+    if (!this.config.binanceApiSecretEnv) {
+      errors.push('Binance API secret environment variable key is required');
+    }
+
+    if (!process.env[this.config.binanceApiSecretEnv]) {
+      errors.push(
+        `Binance API secret not found in environment variable: ${this.config.binanceApiSecretEnv}`
+      );
+    }
+
+    if (!this.config.usdcMint) {
+      errors.push('USDC mint address is required');
+    }
+
+    // Validate numeric ranges
+    if (
+      this.config.portfolioPercentage <= 0 ||
+      this.config.portfolioPercentage > 100
+    ) {
+      errors.push('Portfolio percentage must be between 0 and 100');
+    }
+
+    if (this.config.lowerBoundPercent <= 0) {
+      errors.push('Lower bound percentage must be greater than 0');
+    }
+
+    if (this.config.upperBoundPercent <= 0) {
+      errors.push('Upper bound percentage must be greater than 0');
+    }
+
+    if (this.config.rebalanceDelta <= 0) {
+      errors.push('Rebalance delta must be greater than 0');
+    }
+
+    if (this.config.hedgeLeverage <= 0) {
+      errors.push('Hedge leverage must be greater than 0');
+    }
+
+    // Validate transaction executor specific fields
+    if (this.config.transactionExecutor === 'jito' && !this.config.jitoFee) {
+      errors.push('Jito fee is required when using Jito transaction executor');
+    }
+
+    if (this.config.transactionExecutor === 'warp' && !this.config.warpRpcUrl) {
+      errors.push(
+        'Warp RPC URL is required when using Warp transaction executor'
+      );
+    }
+
+    // Validate Telegram configuration if enabled
+    if (this.config.telegramEnabled) {
+      if (!this.config.telegramBotTokenEnv) {
+        errors.push('Telegram bot token environment variable key is required when Telegram is enabled');
+      }
+
+      if (!process.env[this.config.telegramBotTokenEnv]) {
+        errors.push(
+          `Telegram bot token not found in environment variable: ${this.config.telegramBotTokenEnv}`
+        );
+      }
+
+      if (
+        !this.config.telegramChatIds ||
+        this.config.telegramChatIds.length === 0
+      ) {
+        errors.push(
+          'At least one Telegram chat ID is required when Telegram is enabled'
+        );
+      }
+    }
+
+    // Validate price bound movement percentages
+    if (this.config.lowerMoveLowerBound <= 0) {
+      errors.push('Lower move lower bound must be greater than 0');
+    }
+
+    if (this.config.lowerMoveUpperBound <= 0) {
+      errors.push('Lower move upper bound must be greater than 0');
+    }
+
+    if (this.config.upperMoveLowerBound <= 0) {
+      errors.push('Upper move lower bound must be greater than 0');
+    }
+
+    if (this.config.upperMoveUpperBound <= 0) {
+      errors.push('Upper move upper bound must be greater than 0');
+    }
+
+    // If there are any validation errors, throw them all at once
+    if (errors.length > 0) {
+      throw new Error(`Configuration validation failed:\n${errors.join('\n')}`);
+    }
+  }
+
   private async initClients() {
-    // Initialize Orca, Drift, and Jupiter clients
     try {
-      // Initialize clients here
       this.log('Initializing protocol clients...');
       this.orcaPool = await fetchConcentratedLiquidityPool(
         this.connection,
@@ -175,74 +377,431 @@ export class DeltaNeutralLPExecutor
         USDC_MINT,
         64
       );
+
+      // Set leverage for SOLUSDT futures
+      await this.binanceClient.futuresLeverage({
+        symbol: 'SOLUSDT',
+        leverage: this.config.hedgeLeverage,
+      });
+
+      // Set margin type to isolated
+      await this.binanceClient.futuresMarginType({
+        symbol: 'SOLUSDT',
+        marginType: 'ISOLATED',
+      });
     } catch (error) {
       this.log(`Client initialization failed: ${error}`);
       throw error;
     }
   }
 
-  private async runMonitor() {
-    if (!this.position || !this.driftClient) return;
+  private async sendTelegramMessage(
+    message: string,
+    isCritical: boolean = false
+  ) {
+    if (!this.config.telegramEnabled || !process.env[this.config.telegramBotTokenEnv]) return;
 
-    const currentPrice = await this.getCurrentPrice();
-    if (
-      currentPrice < this.position.lowerPrice ||
-      currentPrice > this.position.upperPrice
-    ) {
-      this.log(`Price out of range, rebalancing...`);
-      await this.closePositions();
-      await this.rebalancePosition(currentPrice > this.position.lowerPrice);
-      return;
-    }
+    const prefix = isCritical ? '🚨 CRITICAL ALERT 🚨\n' : '📊 Update:\n';
+    const fullMessage = `${prefix}${message}`;
 
-    await this.updatePosition();
-
-    const priceChange = Math.abs(
-      (currentPrice - this.position.lastRebalancePrice) /
-        this.position.lastRebalancePrice
-    );
-
-    if (priceChange >= this.config.rebalanceDelta / 100) {
-      // Calculate new perp size based on SOL in pool
-      const targetPerpSize = this.position.solInPool;
-      const sizeDiff = targetPerpSize - this.position.perpSize;
-
-      if (Math.abs(sizeDiff) > 0.01) {
-        try {
-          // TODO: Implement perp position adjustment
-          this.position.perpSize = targetPerpSize;
-          this.position.lastRebalancePrice = currentPrice;
-          this.log(`Perp position rebalanced to ${targetPerpSize} SOL`);
-        } catch (error) {
-          this.log(`Perp rebalance failed: ${error}`);
-        }
+    for (const chatId of this.config.telegramChatIds) {
+      try {
+        await fetch(
+          `${this.TELEGRAM_API_URL}${process.env[this.config.telegramBotTokenEnv]}/sendMessage`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: fullMessage,
+              parse_mode: 'HTML',
+            }),
+          }
+        );
+      } catch (error) {
+        this.log(`Failed to send Telegram message: ${error}`);
       }
     }
   }
 
+  private async handleCriticalError(
+    operation: string,
+    error: unknown,
+    shouldExit: boolean = false
+  ) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const criticalMessage = `Critical error in ${operation}: ${errorMessage}`;
+
+    this.log(criticalMessage);
+    await this.sendTelegramMessage(criticalMessage, true);
+
+    if (shouldExit) {
+      this.log('Initiating emergency position closure...');
+      await this.sendTelegramMessage(
+        'Initiating emergency position closure...',
+        true
+      );
+
+      try {
+        await this.closePositions();
+        await this.sendTelegramMessage(
+          'Emergency position closure completed successfully.',
+          true
+        );
+      } catch (closeError) {
+        const closeErrorMessage =
+          closeError instanceof Error ? closeError.message : String(closeError);
+        await this.sendTelegramMessage(
+          `Failed to close positions during emergency: ${closeErrorMessage}`,
+          true
+        );
+      }
+
+      this.stop();
+    }
+  }
+
+  private async retryBinanceOperation<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    delayMs: number = 1000,
+    isCritical: boolean = false
+  ): Promise<T> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        lastError = error instanceof Error ? error : new Error(errorMessage);
+
+        // Check if error is retryable
+        const isRetryable =
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('network') ||
+          errorMessage.includes('rate limit') ||
+          errorMessage.includes('Too many requests') ||
+          errorMessage.includes('Internal server error');
+
+        if (!isRetryable || attempt === maxRetries) {
+          if (isCritical) {
+            await this.handleCriticalError('Binance operation', error, true);
+          }
+          throw lastError;
+        }
+
+        this.log(
+          `Binance API attempt ${attempt} failed: ${errorMessage}. Retrying in ${delayMs}ms...`
+        );
+        await sleep(delayMs * attempt); // Exponential backoff
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async withLock<T>(
+    lockName: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    try {
+      await this.lockManager.acquire(lockName);
+      return await operation();
+    } finally {
+      this.lockManager.release(lockName);
+    }
+  }
+
+  private async openBinancePerpPosition(size: number) {
+    try {
+      // Open short position on Binance with retries
+      const order = await this.retryBinanceOperation(
+        () =>
+          this.binanceClient.futuresOrder({
+            symbol: 'SOLUSDT',
+            side: 'SELL',
+            type: 'MARKET',
+            quantity: size.toFixed(3),
+            reduceOnly: 'false',
+          }),
+        3,
+        1000,
+        true // Mark as critical operation
+      );
+
+      this.log(`Opened Binance perp position: ${order.orderId}`);
+      await this.sendTelegramMessage(
+        `Opened Binance perp position: ${order.orderId}`
+      );
+
+      // Get the current position's price bounds
+      if (!this.position) {
+        throw new Error('Position state not available for TP/SL orders');
+      }
+
+      const { lowerPrice, upperPrice } = this.position;
+
+      // Place take-profit order (buy to close at lower price)
+      await this.retryBinanceOperation(
+        () =>
+          this.binanceClient.futuresOrder({
+            symbol: 'SOLUSDT',
+            side: 'BUY',
+            type: 'TAKE_PROFIT_MARKET',
+            stopPrice: lowerPrice.toFixed(2),
+            quantity: size.toFixed(3),
+            reduceOnly: 'true',
+          }),
+        3,
+        1000,
+        true
+      );
+
+      // Place stop-loss order (buy to close at upper price)
+      await this.retryBinanceOperation(
+        () =>
+          this.binanceClient.futuresOrder({
+            symbol: 'SOLUSDT',
+            side: 'BUY',
+            type: 'STOP_MARKET',
+            stopPrice: upperPrice.toFixed(2),
+            quantity: size.toFixed(3),
+            reduceOnly: 'true',
+          }),
+        3,
+        1000,
+        true
+      );
+
+      this.log(`Added TP at ${lowerPrice} and SL at ${upperPrice}`);
+      await this.sendTelegramMessage(
+        `Added TP at ${lowerPrice} and SL at ${upperPrice}`
+      );
+      return order.orderId.toString();
+    } catch (error: unknown) {
+      await this.handleCriticalError('Opening Binance position', error, true);
+      throw error;
+    }
+  }
+
+  private async adjustBinancePerpPosition(targetSize: number) {
+    try {
+      if (!this.position?.binancePerpPositionId) return;
+
+      const currentSize = this.position.perpSize;
+      const sizeDiff = targetSize - currentSize;
+
+      if (Math.abs(sizeDiff) > 0.01) {
+        const currentPrice = await this.getCurrentPrice();
+        const quantity = Math.abs(sizeDiff) / currentPrice;
+
+        // Cancel existing TP/SL orders before adjusting position
+        await this.retryBinanceOperation(
+          () =>
+            this.binanceClient.futuresCancelAllOpenOrders({
+              symbol: 'SOLUSDT',
+            }),
+          3,
+          1000,
+          true
+        );
+
+        // Adjust position with retries
+        await this.retryBinanceOperation(
+          () =>
+            this.binanceClient.futuresOrder({
+              symbol: 'SOLUSDT',
+              side: sizeDiff > 0 ? 'SELL' : 'BUY',
+              type: 'MARKET',
+              quantity: quantity.toFixed(3),
+              reduceOnly: 'false',
+            }),
+          3,
+          1000,
+          true
+        );
+
+        // Place new TP/SL orders with updated size
+        const { lowerPrice, upperPrice } = this.position;
+        await this.retryBinanceOperation(
+          () =>
+            this.binanceClient.futuresOrder({
+              symbol: 'SOLUSDT',
+              side: 'BUY',
+              type: 'TAKE_PROFIT_MARKET',
+              stopPrice: lowerPrice.toFixed(2),
+              quantity: targetSize.toFixed(3),
+              reduceOnly: 'true',
+            }),
+          3,
+          1000,
+          true
+        );
+
+        await this.retryBinanceOperation(
+          () =>
+            this.binanceClient.futuresOrder({
+              symbol: 'SOLUSDT',
+              side: 'BUY',
+              type: 'STOP_MARKET',
+              stopPrice: upperPrice.toFixed(2),
+              quantity: targetSize.toFixed(3),
+              reduceOnly: 'true',
+            }),
+          3,
+          1000,
+          true
+        );
+
+        this.position.perpSize = targetSize;
+        const message = `Adjusted Binance perp position to ${targetSize} SOL with updated TP/SL`;
+        this.log(message);
+        await this.sendTelegramMessage(message);
+      }
+    } catch (error: unknown) {
+      await this.handleCriticalError('Adjusting Binance position', error, true);
+      throw error;
+    }
+  }
+
+  private async closeBinancePerpPosition() {
+    try {
+      if (!this.position?.binancePerpPositionId) return;
+
+      // Get current position size with retries
+      const positions = await this.retryBinanceOperation(() =>
+        this.binanceClient.futuresPositionRisk()
+      );
+
+      const solPosition = positions.find((p) => p.symbol === 'SOLUSDT');
+
+      if (solPosition && parseFloat(solPosition.positionAmt) !== 0) {
+        // Close position with retries
+        await this.retryBinanceOperation(() =>
+          this.binanceClient.futuresOrder({
+            symbol: 'SOLUSDT',
+            side: parseFloat(solPosition.positionAmt) > 0 ? 'SELL' : 'BUY',
+            type: 'MARKET',
+            quantity: Math.abs(parseFloat(solPosition.positionAmt)).toFixed(3),
+            reduceOnly: 'true',
+          })
+        );
+      }
+
+      this.position.binancePerpPositionId = undefined;
+      this.position.perpSize = 0;
+      this.log('Closed Binance perp position');
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.log(
+        `Failed to close Binance perp position after retries: ${errorMessage}`
+      );
+      throw new Error(`Failed to close Binance perp position: ${errorMessage}`);
+    }
+  }
+
+  private async runMonitor() {
+    if (!this.position) return;
+
+    try {
+      await this.withLock('monitor', async () => {
+        const currentPrice = await this.getCurrentPrice();
+
+        if (
+          currentPrice < this.position!.lowerPrice ||
+          currentPrice > this.position!.upperPrice
+        ) {
+          this.log(`Price out of range, rebalancing...`);
+          await this.rebalancePosition(
+            currentPrice > this.position!.lowerPrice
+          );
+          return;
+        }
+
+        await this.updatePosition();
+
+        const priceChange = Math.abs(
+          (currentPrice - this.position!.lastRebalancePrice) /
+            this.position!.lastRebalancePrice
+        );
+
+        if (priceChange >= this.config.rebalanceDelta / 100) {
+          const targetPerpSize = this.position!.solInPool;
+          await this.adjustBinancePerpPosition(targetPerpSize);
+          this.position!.lastRebalancePrice = currentPrice;
+        }
+      });
+    } catch (error) {
+      this.log(`Monitor operation failed: ${error}`);
+      await this.handleCriticalError('Monitor operation', error, false);
+    }
+  }
+
   private async rebalancePosition(isUpwardMove: boolean) {
-    // Implement full position rebalancing when out of range
-    const currentPrice = await this.getCurrentPrice();
+    if (this.lockManager.isLocked('rebalance')) {
+      this.log('Rebalancing already in progress, skipping...');
+      return;
+    }
 
-    // Calculate new bounds based on direction
-    const newLowerBound = isUpwardMove
-      ? currentPrice * (1 - this.config.upperMoveLowerBound / 100)
-      : currentPrice * (1 - this.config.lowerMoveLowerBound / 100);
+    try {
+      await this.withLock('rebalance', async () => {
+        const currentPrice = await this.getCurrentPrice();
+        const currentPriceDecimal = new Decimal(currentPrice);
 
-    const newUpperBound = isUpwardMove
-      ? currentPrice * (1 + this.config.upperMoveUpperBound / 100)
-      : currentPrice * (1 + this.config.lowerMoveUpperBound / 100);
+        // Calculate new bounds using Decimal
+        const newLowerBound = isUpwardMove
+          ? currentPriceDecimal
+              .mul(
+                new Decimal(1).minus(
+                  new Decimal(this.config.upperMoveLowerBound).div(100)
+                )
+              )
+              .toNumber()
+          : currentPriceDecimal
+              .mul(
+                new Decimal(1).minus(
+                  new Decimal(this.config.lowerMoveLowerBound).div(100)
+                )
+              )
+              .toNumber();
 
-    // Close existing positions
-    await this.closePositions();
+        const newUpperBound = isUpwardMove
+          ? currentPriceDecimal
+              .mul(
+                new Decimal(1).plus(
+                  new Decimal(this.config.upperMoveUpperBound).div(100)
+                )
+              )
+              .toNumber()
+          : currentPriceDecimal
+              .mul(
+                new Decimal(1).plus(
+                  new Decimal(this.config.lowerMoveUpperBound).div(100)
+                )
+              )
+              .toNumber();
 
-    // Calculate new position sizes
-    const portfolioValue = await this.getPortfolioValue();
-    const positionValue =
-      (portfolioValue * this.config.portfolioPercentage) / 100;
+        if (this.position) {
+          await this.closePositions();
+        }
 
-    // Open new positions
-    await this.openPositions(positionValue, newLowerBound, newUpperBound);
+        const portfolioValue = await this.getPortfolioValue();
+        const positionValue = new Decimal(portfolioValue)
+          .mul(this.config.portfolioPercentage)
+          .div(100)
+          .toNumber();
+
+        await this.openPositions(positionValue, newLowerBound, newUpperBound);
+      });
+    } catch (error) {
+      await this.handleCriticalError('Rebalancing position', error, true);
+      throw error;
+    }
   }
 
   private async getCurrentPrice(): Promise<number> {
@@ -281,112 +840,165 @@ export class DeltaNeutralLPExecutor
     lowerBound: number,
     upperBound: number
   ) {
-    const currentPrice = await this.getCurrentPrice();
-    const price0 = currentPrice * (1 - lowerBound / 100);
-    const price1 = currentPrice * (1 + upperBound / 100);
+    try {
+      await this.withLock('position', async () => {
+        const currentPrice = await this.getCurrentPrice();
+        const currentPriceDecimal = new Decimal(currentPrice);
+        const lowerBoundDecimal = new Decimal(lowerBound);
+        const upperBoundDecimal = new Decimal(upperBound);
+        const sizeInUsdcDecimal = new Decimal(sizeInUsdc);
 
-    const collateralAmount = sizeInUsdc * (price0 / currentPrice);
+        // Calculate price adjustments using Decimal for precision
+        const lowerPriceAdjustment = currentPriceDecimal.mul(
+          new Decimal(1).minus(lowerBoundDecimal.div(100))
+        );
+        const upperPriceAdjustment = currentPriceDecimal.mul(
+          new Decimal(1).plus(upperBoundDecimal.div(100))
+        );
 
-    const poolAmount = sizeInUsdc - collateralAmount;
+        // Calculate portions using Decimal
+        // const collateralAmount = sizeInUsdcDecimal.mul(
+        //   lowerPriceAdjustment.div(currentPriceDecimal)
+        // );
+        const poolAmount = sizeInUsdcDecimal;
+        const solPortion = poolAmount.mul(
+          lowerPriceAdjustment.div(currentPriceDecimal)
+        );
+        const usdcPortion = poolAmount.mul(
+          upperPriceAdjustment.div(currentPriceDecimal)
+        );
 
-    const solPortion = poolAmount * (price0 / currentPrice);
-    const usdcPortion = poolAmount * (price1 / currentPrice);
+        let param = { tokenA: 0n, tokenB: 0n };
+        if (this.orcaPool?.tokenMintA.equals(USDC_MINT)) {
+          param.tokenA = BigInt(usdcPortion.toFixed(0));
+        } else {
+          param.tokenB = BigInt(usdcPortion.toFixed(0));
+        }
 
-    let param = { tokenA: 0n, tokenB: 0n };
-    if (this.orcaPool?.tokenMintA.equals(USDC_MINT)) {
-      param.tokenA = BigInt(usdcPortion);
-    } else {
-      param.tokenB = BigInt(usdcPortion);
+        const transaction = new Transaction();
+
+        const { quote, instructions, positionMint } =
+          await openPositionInstructions(
+            this.connection,
+            this.orcaPool?.address,
+            param,
+            lowerPriceAdjustment.toNumber(),
+            upperPriceAdjustment.toNumber(),
+            0.2,
+            this.wallet
+          );
+
+        const usdcNeeded = usdcPortion;
+        const usdcBalance = await getTokenBalance(
+          this.connection,
+          USDC_MINT,
+          this.wallet.publicKey
+        );
+        if (usdcBalance < usdcNeeded.toNumber()) {
+          const usdcShortage = new Decimal(1.01)
+            .mul(usdcNeeded.minus(usdcBalance))
+            .div(10 ** 6);
+          const amountToSwap =
+            LAMPORTS_PER_SOL * usdcShortage.div(currentPriceDecimal).toNumber();
+          const jupiterQuote = await this.getJupiterQuote(
+            SOL_MINT.toString(),
+            USDC_MINT.toString(),
+            amountToSwap
+          );
+          const swapTx = await this.getJupiterSwap(jupiterQuote);
+          transaction.add(swapTx);
+        }
+
+        const solNeeded = this.orcaPool?.tokenMintA.equals(USDC_MINT)
+          ? quote.tokenEstB
+          : quote.tokenEstA;
+
+        const solBalance = await getSolBalance(
+          this.connection,
+          this.wallet.publicKey
+        );
+        if (solBalance < solNeeded) {
+          const solShortage = new Decimal(1.01).mul(
+            new Decimal(solPortion).minus(solBalance)
+          );
+          const amountToSwap = LAMPORTS_PER_SOL * solShortage.toNumber();
+          const jupiterQuote = await this.getJupiterQuote(
+            USDC_MINT.toString(),
+            SOL_MINT.toString(),
+            amountToSwap
+          );
+          const swapTx = await this.getJupiterSwap(jupiterQuote);
+          transaction.add(swapTx);
+        }
+
+        const tx = new Transaction().add(...instructions);
+
+        const blockhash = await this.connection.getLatestBlockhash();
+
+        const message = new TransactionMessage({
+          payerKey: this.wallet.publicKey,
+          recentBlockhash: blockhash.blockhash,
+          instructions: tx.instructions,
+        }).compileToV0Message();
+
+        const versionedTx = new VersionedTransaction(message);
+        const result = await this.transactionExecutor.executeAndConfirm(
+          versionedTx,
+          this.wallet.payer,
+          blockhash
+        );
+
+        this.log(`Opened position ${positionMint}; tx: ${result.signature}`);
+
+        // Open Binance perp position
+        const binancePositionId = await this.openBinancePerpPosition(
+          solPortion.toNumber()
+        );
+
+        // Create new position state atomically
+        this.position = {
+          positionMint,
+          binancePerpPositionId: binancePositionId,
+          entryPrice: currentPrice,
+          currentPrice,
+          solInPool: solPortion.toNumber(),
+          usdcInPool: usdcPortion.toNumber(),
+          solFee: 0,
+          usdcFee: 0,
+          perpSize: solPortion.toNumber(),
+          lastRebalancePrice: currentPrice,
+          lowerPrice: lowerPriceAdjustment.toNumber(),
+          upperPrice: upperPriceAdjustment.toNumber(),
+          status: 'active',
+        };
+
+        return positionMint;
+      });
+    } catch (error) {
+      await this.handleCriticalError('Opening positions', error, true);
+      throw error;
     }
-
-    const transaction = new Transaction();
-
-    const { quote, instructions, positionMint } =
-      await openPositionInstructions(
-        this.connection,
-        this.orcaPool?.address,
-        param,
-        price0,
-        price1,
-        0.2,
-        this.wallet
-      );
-
-    const usdcNeeded = usdcPortion + collateralAmount;
-    const usdcBalance = await getTokenBalance(
-      this.connection,
-      USDC_MINT,
-      this.wallet.publicKey
-    );
-    if (usdcBalance < usdcNeeded) {
-      const usdcShortage = (1.01 * (usdcNeeded - usdcBalance)) / 10 ** 6;
-      const amountToSwap = (LAMPORTS_PER_SOL * usdcShortage) / currentPrice;
-      const jupiterQuote = await this.getJupiterQuote(
-        SOL_MINT.toString(),
-        USDC_MINT.toString(),
-        amountToSwap
-      );
-      const swapTx = await this.getJupiterSwap(jupiterQuote);
-      transaction.add(swapTx);
-    }
-
-    const solNeeded = this.orcaPool?.tokenMintA.equals(USDC_MINT)
-      ? quote.tokenEstB
-      : quote.tokenEstA;
-
-    const solBalance = await getSolBalance(
-      this.connection,
-      this.wallet.publicKey
-    );
-    if (solBalance < solNeeded) {
-      const solShortage = 1.01 * (solPortion - solBalance);
-      const amountToSwap = LAMPORTS_PER_SOL * solShortage;
-      const jupiterQuote = await this.getJupiterQuote(
-        USDC_MINT.toString(),
-        SOL_MINT.toString(),
-        amountToSwap
-      );
-      const swapTx = await this.getJupiterSwap(jupiterQuote);
-      transaction.add(swapTx);
-    }
-
-    const tx = new Transaction().add(...instructions);
-
-    const blockhash = await this.connection.getLatestBlockhash();
-
-    const message = new TransactionMessage({
-      payerKey: this.wallet.publicKey,
-      recentBlockhash: blockhash.blockhash,
-      instructions: tx.instructions,
-    }).compileToV0Message();
-
-    const versionedTx = new VersionedTransaction(message);
-    const result = await this.transactionExecutor.executeAndConfirm(
-      versionedTx,
-      this.wallet.payer,
-      blockhash
-    );
-
-    this.log(`Opened position ${positionMint}; tx: ${result.signature}`);
-
-    this.position = {
-      positionMint,
-      perpPositionId: undefined,
-      entryPrice: currentPrice,
-      currentPrice,
-      solInPool: solPortion,
-      usdcInPool: usdcPortion,
-      perpSize: solPortion,
-      lastRebalancePrice: currentPrice,
-      lowerPrice: price0,
-      upperTick: price1,
-      status: 'active',
-    };
-
-    return positionMint;
   }
 
   private async closePositions() {
+    try {
+      await this.withLock('position', async () => {
+        // Close Orca LP position
+        await this.closeOrcaPosition();
+
+        // Close Binance perp position
+        await this.closeBinancePerpPosition();
+
+        // Clear position state atomically
+        this.position = undefined;
+      });
+    } catch (error) {
+      await this.handleCriticalError('Closing positions', error, true);
+      throw error;
+    }
+  }
+
+  private async closeOrcaPosition() {
     const { instructions } = await closePositionInstructions(
       this.connection,
       this.position?.positionMint,
@@ -395,7 +1007,6 @@ export class DeltaNeutralLPExecutor
     );
 
     const tx = new Transaction().add(...instructions);
-
     const blockhash = await this.connection.getLatestBlockhash();
 
     const message = new TransactionMessage({
@@ -412,40 +1023,45 @@ export class DeltaNeutralLPExecutor
     );
 
     this.log(
-      `Closed position ${this.position?.positionMint}; tx: ${result.signature}`
+      `Closed Orca position ${this.position?.positionMint}; tx: ${result.signature}`
     );
-
-    this.position = undefined;
   }
 
   private async updatePosition() {
+    if (!this.position) return;
+
     try {
-      if (!this.position) return;
+      await this.withLock('position', async () => {
+        const { quote, feesQuote } = await closePositionInstructions(
+          this.connection,
+          this.position!.positionMint,
+          100,
+          this.wallet
+        );
 
-      const { quote, feesQuote } = await closePositionInstructions(
-        this.connection,
-        this.position?.positionMint,
-        100,
-        this.wallet
-      );
+        const solIsA = quote.tokenMinA.toString() === SOL_MINT.toString();
 
-      const solIsA = quote.tokenMinA.toString() === SOL_MINT.toString();
+        // Create a new position state to ensure atomic update
+        const updatedPosition: PositionState = {
+          ...this.position!,
+          solInPool: solIsA ? Number(quote.tokenEstA) : Number(quote.tokenEstB),
+          usdcInPool: solIsA
+            ? Number(quote.tokenEstB)
+            : Number(quote.tokenEstA),
+          solFee: solIsA
+            ? Number(feesQuote.feeOwedA)
+            : Number(feesQuote.feeOwedB),
+          usdcFee: solIsA
+            ? Number(feesQuote.feeOwedB)
+            : Number(feesQuote.feeOwedA),
+        };
 
-      this.position.solInPool = solIsA
-        ? Number(quote.tokenEstA)
-        : Number(quote.tokenEstB);
-      this.position.usdcInPool = solIsA
-        ? Number(quote.tokenEstB)
-        : Number(quote.tokenEstA);
-
-      this.position.solFee = solIsA
-        ? Number(feesQuote.feeOwedA)
-        : Number(feesQuote.feeOwedB);
-      this.position.usdcFee = solIsA
-        ? Number(feesQuote.feeOwedB)
-        : Number(feesQuote.feeOwedA);
+        // Atomic update of position state
+        this.position = updatedPosition;
+      });
     } catch (error) {
       this.log(`Position update failed: ${error}`);
+      await this.handleCriticalError('Updating position', error, false);
     }
   }
 
@@ -496,14 +1112,26 @@ export class DeltaNeutralLPExecutor
   }
 
   public async handleCommand(action: string, args: string[]): Promise<string> {
+    // Check if the command is from an authorized Telegram chat
+    // const telegramChatId = args[args.length - 1]; // Last argument should be the chat ID
+    // if (!this.config.telegramChatIds.includes(telegramChatId)) {
+    //   return 'Unauthorized access. Please contact the administrator.';
+    // }
+
     switch (action.toLowerCase()) {
       case 'status':
         return JSON.stringify(await this.getStatus(), null, 2);
       case 'rebalance':
-        await this.runMonitor();
+        await this.rebalance(args[0] as 'up' | 'down');
         return 'Manual rebalance triggered';
+      case 'stop':
+        this.stop();
+        return 'Strategy stopped';
+      case 'start':
+        await this.start();
+        return 'Strategy started';
       default:
-        return `Unknown command: ${action}. Available commands: status, rebalance`;
+        return `Unknown command: ${action}. Available commands: status, rebalance, stop, start`;
     }
   }
 
@@ -519,12 +1147,38 @@ export class DeltaNeutralLPExecutor
     let portfolioValue = await this.getPortfolioValue();
     if (!this.position) return portfolioValue;
 
+    const currentPrice = await this.getCurrentPrice();
+    const currentPriceDecimal = new Decimal(currentPrice);
+
+    // Add Orca LP position value using Decimal
     portfolioValue += this.position.usdcInPool;
     portfolioValue += this.position.usdcFee;
+    portfolioValue += new Decimal(this.position.solInPool)
+      .plus(this.position.solFee)
+      .div(LAMPORTS_PER_SOL)
+      .mul(currentPriceDecimal)
+      .toNumber();
 
-    portfolioValue +=
-      ((this.position.solInPool + this.position.solFee) / LAMPORTS_PER_SOL) *
-      (await this.getCurrentPrice());
+    // Add Binance perp position value and PnL with retries
+    try {
+      const positions = await this.retryBinanceOperation(() =>
+        this.binanceClient.futuresPositionRisk()
+      );
+
+      const solPosition = positions.find((p) => p.symbol === 'SOLUSDT');
+
+      if (solPosition) {
+        const unrealizedPnL = new Decimal(solPosition.unRealizedProfit);
+        portfolioValue += unrealizedPnL.toNumber();
+      }
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.log(
+        `Failed to get Binance position value after retries: ${errorMessage}`
+      );
+      // Don't throw here as this is not critical for position value calculation
+    }
 
     return portfolioValue;
   }
@@ -592,5 +1246,15 @@ export class DeltaNeutralLPExecutor
 
   public getWalletPrivateKey(): string {
     return process.env[this.config.privateKeyEnvKey] || '';
+  }
+
+  public async rebalance(direction: 'up' | 'down'): Promise<void> {
+    if (this.lockManager.isLocked('rebalance')) {
+      this.log('Rebalancing already in progress, skipping...');
+      return;
+    }
+
+    this.log(`Rebalancing ${direction}...`);
+    await this.rebalancePosition(direction === 'up');
   }
 }

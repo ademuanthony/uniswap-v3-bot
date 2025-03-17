@@ -25,6 +25,7 @@
     "@uniswap/sdk-core": "^3.2.0",
     "@uniswap/v3-sdk": "^3.10.0",
     "axios": "^1.7.9",
+    "binance-api-node": "^0.12.9",
     "blessed": "^0.1.81",
     "bn.js": "^5.2.1",
     "bs58": "^6.0.0",
