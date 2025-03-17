@@ -14,10 +14,9 @@ import dotenv from 'dotenv';
 import { Logger } from './utils/logger';
 import { BTCBridgeExecutor } from './strategies/BTCBridgeStrategy';
 import { BTCBridgeStrategy } from './strategies/BTCBridgeStrategy';
-import { Wallet } from 'ethers';
-import { checkTokenSourceCode, getTokenSourceCode } from './utils/tokenUtils';
-import { SUPPORTED_CHAINS } from './utils/tokenUtils';
 import { NewTokenExecutor } from './strategies/NewTokenStrategy';
+import { TornadoMixingExecutor } from './strategies/TornadoMixingStrategy';
+import { TornadoMixingStrategy } from './strategies/TornadoMixingStrategy';
 
 dotenv.config();
 
@@ -103,6 +102,18 @@ function createExecutor(strategy: Strategy) {
         return new NewTokenExecutor(strategy as NewTokenStrategy);
       }
       throw new Error('Invalid New Token strategy configuration');
+    }
+    case 'tornado-mixer': {
+      if (
+        'amount' in strategy &&
+        'currency' in strategy &&
+        'interval' in strategy &&
+        'privateKeyEnvKey' in strategy &&
+        'relayerUrls' in strategy
+      ) {
+        return new TornadoMixingExecutor(strategy as TornadoMixingStrategy);
+      }
+      throw new Error('Invalid Tornado Mixer strategy configuration');
     }
     default:
       throw new Error(`Unknown strategy type: ${strategy.type}`);
