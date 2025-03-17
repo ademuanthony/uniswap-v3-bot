@@ -17,6 +17,10 @@ import { BTCBridgeStrategy } from './strategies/BTCBridgeStrategy';
 import { NewTokenExecutor } from './strategies/NewTokenStrategy';
 import { TornadoMixingExecutor } from './strategies/TornadoMixingStrategy';
 import { TornadoMixingStrategy } from './strategies/TornadoMixingStrategy';
+import {
+  DeltaNeutralLPStrategy,
+  DeltaNeutralLPExecutor,
+} from './strategies/DeltaNeutralLPStrategy';
 
 dotenv.config();
 
@@ -114,6 +118,38 @@ function createExecutor(strategy: Strategy) {
         return new TornadoMixingExecutor(strategy as TornadoMixingStrategy);
       }
       throw new Error('Invalid Tornado Mixer strategy configuration');
+    }
+    case 'delta-neutral-lp': {
+      if (
+        'name' in strategy &&
+        'key' in strategy &&
+        'autoStart' in strategy &&
+        'transactionExecutor' in strategy &&
+        'jitoFee' in strategy &&
+        'warpRpcUrl' in strategy &&
+        'rpcUrl' in strategy &&
+        'privateKeyEnvKey' in strategy &&
+        'binanceApiKeyEnv' in strategy &&
+        'binanceApiSecretEnv' in strategy &&
+        'binanceTestnet' in strategy &&
+        'telegramEnabled' in strategy &&
+        'telegramBotTokenEnv' in strategy &&
+        'telegramChatIds' in strategy &&
+        'usdcMint' in strategy &&
+        'portfolioPercentage' in strategy &&
+        'lowerBoundPercent' in strategy &&
+        'upperBoundPercent' in strategy &&
+        'rebalanceDelta' in strategy &&
+        'keepHedgeAboveEntry' in strategy &&
+        'hedgeLeverage' in strategy &&
+        'lowerMoveLowerBound' in strategy &&
+        'lowerMoveUpperBound' in strategy &&
+        'upperMoveLowerBound' in strategy &&
+        'upperMoveUpperBound' in strategy
+      ) {
+        return new DeltaNeutralLPExecutor(strategy as DeltaNeutralLPStrategy);
+      }
+      throw new Error('Invalid Delta Neutral LP strategy configuration');
     }
     default:
       throw new Error(`Unknown strategy type: ${strategy.type}`);

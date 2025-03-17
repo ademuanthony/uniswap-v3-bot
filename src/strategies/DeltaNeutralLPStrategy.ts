@@ -28,7 +28,7 @@ import {
 } from '@orca-so/whirlpools';
 import Binance from 'binance-api-node';
 
-export interface DeltaNeutralLPConfig extends BaseStrategy {
+export interface DeltaNeutralLPStrategy extends BaseStrategy {
   type: 'delta_neutral_lp';
   transactionExecutor: string;
   jitoFee: string;
@@ -174,7 +174,7 @@ export class DeltaNeutralLPExecutor
   extends BaseStrategyExecutor
   implements StrategyExecutor
 {
-  private config: DeltaNeutralLPConfig;
+  private config: DeltaNeutralLPStrategy;
   private _isRunning: boolean = false;
   private priceMonitor?: NodeJS.Timeout;
   private position?: PositionState;
@@ -189,7 +189,7 @@ export class DeltaNeutralLPExecutor
   // private readonly orcaPoolAddress: string = 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE';
   private readonly JUPITER_API_URL = 'https://quote-api.jup.ag/v6';
 
-  constructor(config: DeltaNeutralLPConfig) {
+  constructor(config: DeltaNeutralLPStrategy) {
     super();
     this.config = config;
     this.validateConfig();
