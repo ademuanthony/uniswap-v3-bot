@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import BN from 'bn.js';
 import { buffPedersenHash } from './pedersen';
 import { ethers } from 'ethers';
-import { buildGroth16 } from 'snarkjs';
+import * as snarkjs from 'snarkjs';
 import { MerkleTree } from './merkleTree';
 import { config } from './tornado.config';
 
@@ -402,7 +402,7 @@ async function generateProof({
   };
 
   // Generate SNARK proof
-  const { proof } = await buildGroth16().prove(input);
+  const { proof } = await (snarkjs as any).groth16.prove(input);
 
   // Prepare arguments for contract
   const args = [

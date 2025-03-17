@@ -45,6 +45,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/circomlibjs": "^0.1.6",
     "@types/node": "^22.13.10",
     "@types/snarkjs": "^0.7.9",
     "typescript": "^5.7.3"

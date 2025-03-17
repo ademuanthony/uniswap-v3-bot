@@ -1,6 +1,6 @@
 import { BigNumber, ethers } from 'ethers';
 import { randomBytes } from 'crypto';
-import { buildGroth16 } from 'snarkjs';
+import * as snarkjs from 'snarkjs';
 import { MerkleTree } from './merkleTree';
 import { toFixedHex, parseWithdrawNote } from './tornado-utils';
 import { buffPedersenHash } from './pedersen';
@@ -216,7 +216,7 @@ export async function withdraw({
     // 8. Estimate gas and prepare transaction
     const gasLimit = await tornadoProxy.estimateGas.withdraw(...withdrawParams);
     const gasPrice = await provider.getGasPrice();
-  
+
     // 9. Send withdrawal transaction
     const tx = await tornadoProxy.withdraw(...withdrawParams, {
       gasLimit: gasLimit.mul(12).div(10), // Add 20% buffer
@@ -326,8 +326,12 @@ async function generateProof({
     pathIndices,
   };
 
-  // Generate SNARK proof
-  const { proof } = await buildGroth16().prove(input);
+  // Generate SNARK proof using the correct snarkjs API
+  const { proof } = await (snarkjs as any).fullProve(
+    input,
+    'circuit.wasm',
+    'proving_key.zkey'
+  );
 
   // Prepare arguments for contract
   const args = [
