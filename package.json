@@ -6,7 +6,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "ts-node src/bot.ts",
     "build": "tsc",
-    "start:prod": "node dist/bot.js"
+    "start:prod": "node dist/bot.js",
+    "pk": "ts-node src/pk.ts"
   },
   "keywords": [],
   "author": "",
