@@ -414,17 +414,17 @@ export class DeltaNeutralLPExecutor
         64
       );
 
-      // // Set leverage for SOLUSDT futures
-      // await this.binanceClient.futuresLeverage({
-      //   symbol: 'SOLUSDT',
-      //   leverage: this.config.hedgeLeverage,
-      // });
+      // Set leverage for SOLUSDT futures
+      await this.binanceClient.futuresLeverage({
+        symbol: 'SOLUSDT',
+        leverage: this.config.hedgeLeverage,
+      });
 
-      // // Set margin type to isolated
-      // await this.binanceClient.futuresMarginType({
-      //   symbol: 'SOLUSDT',
-      //   marginType: 'ISOLATED',
-      // });
+      // Set margin type to isolated
+      await this.binanceClient.futuresMarginType({
+        symbol: 'SOLUSDT',
+        marginType: 'ISOLATED',
+      });
     } catch (error) {
       this.log(`Client initialization failed: ${error}`);
       throw error;
