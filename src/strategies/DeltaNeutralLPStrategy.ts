@@ -411,7 +411,7 @@ export class DeltaNeutralLPExecutor
         this.solanaRpc,
         address(SOL_MINT.toBase58()),
         address(USDC_MINT.toBase58()),
-        64
+        4
       );
 
       // // Set leverage for SOLUSDT futures
@@ -853,7 +853,7 @@ export class DeltaNeutralLPExecutor
         inputAmount: 1000000000n,
         mint: address(SOL_MINT.toBase58()),
       },
-      address(USDC_MINT.toBase58()),
+      this.orcaPool!.address,
       100,
       this.orcaCompartibleWallet
     );
@@ -866,6 +866,7 @@ export class DeltaNeutralLPExecutor
       USDC_MINT,
       new PublicKey(this.orcaCompartibleWallet!.address)
     );
+    
     const solBalance = await getSolBalance(
       this.connection,
       new PublicKey(this.orcaCompartibleWallet!.address)
@@ -1101,6 +1102,7 @@ export class DeltaNeutralLPExecutor
         return positionMint;
       });
     } catch (error) {
+      console.error('error', error);
       await this.handleCriticalError('Opening positions', error, true);
       throw error;
     }
