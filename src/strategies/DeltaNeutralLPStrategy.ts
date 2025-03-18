@@ -24,17 +24,42 @@ import {
   fetchConcentratedLiquidityPool,
   openPositionInstructions,
   PoolInfo,
+  setWhirlpoolsConfig,
   swapInstructions,
 } from '@orca-so/whirlpools';
 import Binance from 'binance-api-node';
+import {
+  address,
+  appendTransactionMessageInstructions,
+  createKeyPairSignerFromBytes,
+  createSolanaRpc,
+  createTransactionMessage,
+  getBase64EncodedWireTransaction,
+  getComputeUnitEstimateForTransactionMessageFactory,
+  KeyPairSigner,
+  pipe,
+  prependTransactionMessageInstructions,
+  Rpc,
+  setTransactionMessageFeePayer,
+  setTransactionMessageLifetimeUsingBlockhash,
+  signTransactionMessageWithSigners,
+} from '@solana/kit';
+import { GetAccountInfoApi } from '@solana/kit';
+import { GetMultipleAccountsApi } from '@solana/kit';
+import { GetMinimumBalanceForRentExemptionApi } from '@solana/kit';
+import { GetEpochInfoApi } from '@solana/kit';
+import { getSetComputeUnitLimitInstruction } from '@solana-program/compute-budget';
+import { getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
+import { base58 } from 'ethers/lib/utils';
+import fs from 'fs';
 
 export interface DeltaNeutralLPStrategy extends BaseStrategy {
-  type: 'delta_neutral_lp';
+  type: 'delta-neutral-lp';
   transactionExecutor: string;
   jitoFee: string;
   warpRpcUrl: string;
   // Connection details
-  rpcUrl: string;
+  rpcUrlEnv: string;
   privateKeyEnvKey: string;
 
   // Binance API configuration
@@ -183,24 +208,28 @@ export class DeltaNeutralLPExecutor
   private readonly TELEGRAM_API_URL = 'https://api.telegram.org/bot';
 
   private connection: Connection;
+  private solanaRpc: Rpc<
+    GetAccountInfoApi &
+      GetMultipleAccountsApi &
+      GetMinimumBalanceForRentExemptionApi &
+      GetEpochInfoApi
+  >;
   private transactionExecutor: TransactionExecutor;
-  private wallet: Wallet;
+  private orcaCompartibleWallet?: KeyPairSigner;
   private orcaPool?: PoolInfo;
   // private readonly orcaPoolAddress: string = 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE';
   private readonly JUPITER_API_URL = 'https://quote-api.jup.ag/v6';
+
+  private rpcUrl(): string {
+    return process.env[this.config.rpcUrlEnv] || '';
+  }
 
   constructor(config: DeltaNeutralLPStrategy) {
     super();
     this.config = config;
     this.validateConfig();
-    this.connection = new Connection(config.rpcUrl, 'confirmed');
-
-    const privateKeyBuffer = Buffer.from(
-      process.env[config.privateKeyEnvKey] || '',
-      'base64'
-    );
-    const keypair = Keypair.fromSecretKey(privateKeyBuffer);
-    this.wallet = new Wallet(keypair);
+    this.connection = new Connection(this.rpcUrl(), 'confirmed');
+    this.solanaRpc = createSolanaRpc(this.rpcUrl());
 
     const binanceApiKey = process.env[config.binanceApiKeyEnv] || '';
     const binanceApiSecret = process.env[config.binanceApiSecretEnv] || '';
@@ -250,7 +279,7 @@ export class DeltaNeutralLPExecutor
     const errors: string[] = [];
 
     // Validate required fields
-    if (!this.config.rpcUrl) {
+    if (!this.rpcUrl()) {
       errors.push('RPC URL is required');
     }
 
@@ -326,7 +355,9 @@ export class DeltaNeutralLPExecutor
     // Validate Telegram configuration if enabled
     if (this.config.telegramEnabled) {
       if (!this.config.telegramBotTokenEnv) {
-        errors.push('Telegram bot token environment variable key is required when Telegram is enabled');
+        errors.push(
+          'Telegram bot token environment variable key is required when Telegram is enabled'
+        );
       }
 
       if (!process.env[this.config.telegramBotTokenEnv]) {
@@ -371,10 +402,17 @@ export class DeltaNeutralLPExecutor
   private async initClients() {
     try {
       this.log('Initializing protocol clients...');
+      await setWhirlpoolsConfig('solanaMainnet');
+      const keyPairBytes = new Uint8Array(
+        JSON.parse(fs.readFileSync(this.getWalletPrivateKey(), 'utf8'))
+      );
+      this.orcaCompartibleWallet = await createKeyPairSignerFromBytes(keyPairBytes);
+      this.log(`Orca compatible wallet: ${this.orcaCompartibleWallet!.address}`);
+
       this.orcaPool = await fetchConcentratedLiquidityPool(
-        this.connection,
-        SOL_MINT,
-        USDC_MINT,
+        this.solanaRpc,
+        address(SOL_MINT.toBase58()),
+        address(USDC_MINT.toBase58()),
         64
       );
 
@@ -399,7 +437,11 @@ export class DeltaNeutralLPExecutor
     message: string,
     isCritical: boolean = false
   ) {
-    if (!this.config.telegramEnabled || !process.env[this.config.telegramBotTokenEnv]) return;
+    if (
+      !this.config.telegramEnabled ||
+      !process.env[this.config.telegramBotTokenEnv]
+    )
+      return;
 
     const prefix = isCritical ? '🚨 CRITICAL ALERT 🚨\n' : '📊 Update:\n';
     const fullMessage = `${prefix}${message}`;
@@ -407,7 +449,9 @@ export class DeltaNeutralLPExecutor
     for (const chatId of this.config.telegramChatIds) {
       try {
         await fetch(
-          `${this.TELEGRAM_API_URL}${process.env[this.config.telegramBotTokenEnv]}/sendMessage`,
+          `${this.TELEGRAM_API_URL}${
+            process.env[this.config.telegramBotTokenEnv]
+          }/sendMessage`,
           {
             method: 'POST',
             headers: {
@@ -806,14 +850,14 @@ export class DeltaNeutralLPExecutor
 
   private async getCurrentPrice(): Promise<number> {
     const { quote } = await swapInstructions(
-      this.connection,
+      this.solanaRpc,
       {
         inputAmount: 1000000000n,
-        mint: 'So11111111111111111111111111111111111111112',
+        mint: address(SOL_MINT.toBase58()),
       },
-      this.config.usdcMint,
+      address(USDC_MINT.toBase58()),
       100,
-      this.wallet
+      this.orcaCompartibleWallet
     );
     return Number(quote.tokenEstOut);
   }
@@ -822,11 +866,11 @@ export class DeltaNeutralLPExecutor
     const usdcBalance = await getTokenBalance(
       this.connection,
       USDC_MINT,
-      this.wallet.publicKey
+      new PublicKey(this.orcaCompartibleWallet!.address)
     );
     const solBalance = await getSolBalance(
       this.connection,
-      this.wallet.publicKey
+      new PublicKey(this.orcaCompartibleWallet!.address)
     );
     return (
       (usdcBalance +
@@ -856,10 +900,6 @@ export class DeltaNeutralLPExecutor
           new Decimal(1).plus(upperBoundDecimal.div(100))
         );
 
-        // Calculate portions using Decimal
-        // const collateralAmount = sizeInUsdcDecimal.mul(
-        //   lowerPriceAdjustment.div(currentPriceDecimal)
-        // );
         const poolAmount = sizeInUsdcDecimal;
         const solPortion = poolAmount.mul(
           lowerPriceAdjustment.div(currentPriceDecimal)
@@ -869,30 +909,52 @@ export class DeltaNeutralLPExecutor
         );
 
         let param = { tokenA: 0n, tokenB: 0n };
-        if (this.orcaPool?.tokenMintA.equals(USDC_MINT)) {
+        if (this.orcaPool?.tokenMintA === address(USDC_MINT.toBase58())) {
           param.tokenA = BigInt(usdcPortion.toFixed(0));
         } else {
           param.tokenB = BigInt(usdcPortion.toFixed(0));
         }
 
-        const transaction = new Transaction();
-
         const { quote, instructions, positionMint } =
           await openPositionInstructions(
-            this.connection,
-            this.orcaPool?.address,
+            this.solanaRpc,
+            this.orcaPool!.address,
             param,
             lowerPriceAdjustment.toNumber(),
             upperPriceAdjustment.toNumber(),
             0.2,
-            this.wallet
+            this.orcaCompartibleWallet
           );
+
+        const rpc = createSolanaRpc(this.rpcUrl());
+
+        const latestBlockHash = await rpc.getLatestBlockhash().send();
+
+        let transactionMessage = pipe(
+          createTransactionMessage({ version: 0 }),
+          (tx) =>
+            setTransactionMessageFeePayer(
+              this.orcaCompartibleWallet!.address,
+              tx
+            ),
+          (tx) =>
+            setTransactionMessageLifetimeUsingBlockhash(
+              latestBlockHash.value,
+              tx
+            ),
+          (tx) =>
+            setTransactionMessageLifetimeUsingBlockhash(
+              latestBlockHash.value,
+              tx
+            ),
+          (tx) => appendTransactionMessageInstructions(instructions, tx)
+        );
 
         const usdcNeeded = usdcPortion;
         const usdcBalance = await getTokenBalance(
           this.connection,
           USDC_MINT,
-          this.wallet.publicKey
+          new PublicKey(this.orcaCompartibleWallet!.address)
         );
         if (usdcBalance < usdcNeeded.toNumber()) {
           const usdcShortage = new Decimal(1.01)
@@ -900,55 +962,121 @@ export class DeltaNeutralLPExecutor
             .div(10 ** 6);
           const amountToSwap =
             LAMPORTS_PER_SOL * usdcShortage.div(currentPriceDecimal).toNumber();
-          const jupiterQuote = await this.getJupiterQuote(
-            SOL_MINT.toString(),
-            USDC_MINT.toString(),
-            amountToSwap
+
+          const { instructions } = await swapInstructions(
+            rpc,
+            {
+              inputAmount: BigInt(amountToSwap),
+              mint: address(USDC_MINT.toBase58()),
+            },
+            this.orcaPool!.address,
+            100,
+            this.orcaCompartibleWallet
           );
-          const swapTx = await this.getJupiterSwap(jupiterQuote);
-          transaction.add(swapTx);
+
+          transactionMessage = pipe(transactionMessage, (tx) =>
+            prependTransactionMessageInstructions(instructions, tx)
+          );
         }
 
-        const solNeeded = this.orcaPool?.tokenMintA.equals(USDC_MINT)
-          ? quote.tokenEstB
-          : quote.tokenEstA;
+        const solNeeded =
+          this.orcaPool?.tokenMintA === address(USDC_MINT.toBase58())
+            ? quote.tokenEstB
+            : quote.tokenEstA;
 
         const solBalance = await getSolBalance(
           this.connection,
-          this.wallet.publicKey
+          new PublicKey(this.orcaCompartibleWallet!.address)
         );
         if (solBalance < solNeeded) {
           const solShortage = new Decimal(1.01).mul(
             new Decimal(solPortion).minus(solBalance)
           );
           const amountToSwap = LAMPORTS_PER_SOL * solShortage.toNumber();
-          const jupiterQuote = await this.getJupiterQuote(
-            USDC_MINT.toString(),
-            SOL_MINT.toString(),
-            amountToSwap
+
+          const { instructions } = await swapInstructions(
+            rpc,
+            {
+              inputAmount: BigInt(amountToSwap),
+              mint: address(SOL_MINT.toBase58()),
+            },
+            this.orcaPool!.address,
+            100,
+            this.orcaCompartibleWallet
           );
-          const swapTx = await this.getJupiterSwap(jupiterQuote);
-          transaction.add(swapTx);
+
+          transactionMessage = pipe(transactionMessage, (tx) =>
+            prependTransactionMessageInstructions(instructions, tx)
+          );
         }
 
-        const tx = new Transaction().add(...instructions);
+        const getComputeUnitEstimateForTransactionMessage =
+          getComputeUnitEstimateForTransactionMessageFactory({
+            rpc,
+          });
+        const computeUnitEstimate =
+          (await getComputeUnitEstimateForTransactionMessage(
+            transactionMessage
+          )) + 100_000;
+        const medianPrioritizationFee = await rpc
+          .getRecentPrioritizationFees()
+          .send()
+          .then(
+            (fees) =>
+              fees
+                .map((fee) => Number(fee.prioritizationFee))
+                .sort((a, b) => a - b)[Math.floor(fees.length / 2)]
+          );
+        const transactionMessageWithComputeUnitInstructions =
+          await prependTransactionMessageInstructions(
+            [
+              getSetComputeUnitLimitInstruction({ units: computeUnitEstimate }),
+              getSetComputeUnitPriceInstruction({
+                microLamports: medianPrioritizationFee,
+              }),
+            ],
+            transactionMessage
+          );
 
-        const blockhash = await this.connection.getLatestBlockhash();
-
-        const message = new TransactionMessage({
-          payerKey: this.wallet.publicKey,
-          recentBlockhash: blockhash.blockhash,
-          instructions: tx.instructions,
-        }).compileToV0Message();
-
-        const versionedTx = new VersionedTransaction(message);
-        const result = await this.transactionExecutor.executeAndConfirm(
-          versionedTx,
-          this.wallet.payer,
-          blockhash
+        const signedTransaction = await signTransactionMessageWithSigners(
+          transactionMessageWithComputeUnitInstructions
         );
+        const base64EncodedWireTransaction =
+          getBase64EncodedWireTransaction(signedTransaction);
 
-        this.log(`Opened position ${positionMint}; tx: ${result.signature}`);
+        const timeoutMs = 90000;
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < timeoutMs) {
+          const transactionStartTime = Date.now();
+
+          const signature = await rpc
+            .sendTransaction(base64EncodedWireTransaction, {
+              maxRetries: 0n,
+              skipPreflight: true,
+              encoding: 'base64',
+            })
+            .send();
+
+          const statuses = await rpc.getSignatureStatuses([signature]).send();
+          if (statuses.value[0]) {
+            if (!statuses.value[0].err) {
+              console.log(`Transaction confirmed: ${signature}`);
+              break;
+            } else {
+              console.error(
+                `Transaction failed: ${statuses.value[0].err.toString()}`
+              );
+              break;
+            }
+          }
+
+          const elapsedTime = Date.now() - transactionStartTime;
+          const remainingTime = Math.max(0, 1000 - elapsedTime);
+          if (remainingTime > 0) {
+            await new Promise((resolve) => setTimeout(resolve, remainingTime));
+          }
+        }
 
         // Open Binance perp position
         const binancePositionId = await this.openBinancePerpPosition(
@@ -999,32 +1127,96 @@ export class DeltaNeutralLPExecutor
   }
 
   private async closeOrcaPosition() {
+    if (!this.position) return;
+    const rpc = createSolanaRpc(this.rpcUrl());
     const { instructions } = await closePositionInstructions(
-      this.connection,
-      this.position?.positionMint,
+      rpc,
+      address(this.position.positionMint!),
       100,
-      this.wallet
+      this.orcaCompartibleWallet
     );
 
-    const tx = new Transaction().add(...instructions);
-    const blockhash = await this.connection.getLatestBlockhash();
+    const latestBlockHash = await rpc.getLatestBlockhash().send();
 
-    const message = new TransactionMessage({
-      payerKey: this.wallet.publicKey,
-      recentBlockhash: blockhash.blockhash,
-      instructions: tx.instructions,
-    }).compileToV0Message();
-
-    const versionedTx = new VersionedTransaction(message);
-    const result = await this.transactionExecutor.executeAndConfirm(
-      versionedTx,
-      this.wallet.payer,
-      blockhash
+    let transactionMessage = pipe(
+      createTransactionMessage({ version: 0 }),
+      (tx) =>
+        setTransactionMessageFeePayer(this.orcaCompartibleWallet!.address, tx),
+      (tx) =>
+        setTransactionMessageLifetimeUsingBlockhash(latestBlockHash.value, tx),
+      (tx) =>
+        setTransactionMessageLifetimeUsingBlockhash(latestBlockHash.value, tx),
+      (tx) => appendTransactionMessageInstructions(instructions, tx)
     );
 
-    this.log(
-      `Closed Orca position ${this.position?.positionMint}; tx: ${result.signature}`
+    const getComputeUnitEstimateForTransactionMessage =
+      getComputeUnitEstimateForTransactionMessageFactory({
+        rpc,
+      });
+    const computeUnitEstimate =
+      (await getComputeUnitEstimateForTransactionMessage(transactionMessage)) +
+      100_000;
+    const medianPrioritizationFee = await rpc
+      .getRecentPrioritizationFees()
+      .send()
+      .then(
+        (fees) =>
+          fees
+            .map((fee) => Number(fee.prioritizationFee))
+            .sort((a, b) => a - b)[Math.floor(fees.length / 2)]
+      );
+    const transactionMessageWithComputeUnitInstructions =
+      await prependTransactionMessageInstructions(
+        [
+          getSetComputeUnitLimitInstruction({ units: computeUnitEstimate }),
+          getSetComputeUnitPriceInstruction({
+            microLamports: medianPrioritizationFee,
+          }),
+        ],
+        transactionMessage
+      );
+
+    const signedTransaction = await signTransactionMessageWithSigners(
+      transactionMessageWithComputeUnitInstructions
     );
+    const base64EncodedWireTransaction =
+      getBase64EncodedWireTransaction(signedTransaction);
+
+    const timeoutMs = 90000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const transactionStartTime = Date.now();
+
+      const signature = await rpc
+        .sendTransaction(base64EncodedWireTransaction, {
+          maxRetries: 0n,
+          skipPreflight: true,
+          encoding: 'base64',
+        })
+        .send();
+
+      const statuses = await rpc.getSignatureStatuses([signature]).send();
+      if (statuses.value[0]) {
+        if (!statuses.value[0].err) {
+          this.log(
+            `Closed Orca position ${this.position?.positionMint}; tx: ${signature}`
+          );
+          break;
+        } else {
+          console.error(
+            `Transaction failed: ${statuses.value[0].err.toString()}`
+          );
+          break;
+        }
+      }
+
+      const elapsedTime = Date.now() - transactionStartTime;
+      const remainingTime = Math.max(0, 1000 - elapsedTime);
+      if (remainingTime > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remainingTime));
+      }
+    }
   }
 
   private async updatePosition() {
@@ -1032,11 +1224,12 @@ export class DeltaNeutralLPExecutor
 
     try {
       await this.withLock('position', async () => {
+        const rpc = createSolanaRpc(this.rpcUrl());
         const { quote, feesQuote } = await closePositionInstructions(
-          this.connection,
-          this.position!.positionMint,
+          rpc,
+          address(this.position!.positionMint!),
           100,
-          this.wallet
+          this.orcaCompartibleWallet
         );
 
         const solIsA = quote.tokenMinA.toString() === SOL_MINT.toString();
@@ -1198,50 +1391,6 @@ export class DeltaNeutralLPExecutor
         this.position ? JSON.stringify(this.position) : 'None'
       }`,
     ];
-  }
-
-  private async getJupiterQuote(
-    inputMint: string,
-    outputMint: string,
-    amount: number,
-    slippageBps: number = 50
-  ): Promise<JupiterQuoteResponse> {
-    const response = await fetch(
-      `${this.JUPITER_API_URL}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`Jupiter quote failed: ${await response.text()}`);
-    }
-
-    return await response.json();
-  }
-
-  private async getJupiterSwap(
-    quoteResponse: JupiterQuoteResponse
-  ): Promise<Transaction> {
-    const response = await fetch(`${this.JUPITER_API_URL}/swap`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        quoteResponse,
-        userPublicKey: this.wallet.publicKey.toString(),
-        wrapAndUnwrapSol: true,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Jupiter swap failed: ${await response.text()}`);
-    }
-
-    const { swapTransaction } = await response.json();
-    const transaction = Transaction.from(
-      Buffer.from(swapTransaction, 'base64')
-    );
-
-    return transaction;
   }
 
   public getWalletPrivateKey(): string {

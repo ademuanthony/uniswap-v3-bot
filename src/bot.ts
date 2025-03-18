@@ -127,7 +127,7 @@ function createExecutor(strategy: Strategy) {
         'transactionExecutor' in strategy &&
         'jitoFee' in strategy &&
         'warpRpcUrl' in strategy &&
-        'rpcUrl' in strategy &&
+        'rpcUrlEnv' in strategy &&
         'privateKeyEnvKey' in strategy &&
         'binanceApiKeyEnv' in strategy &&
         'binanceApiSecretEnv' in strategy &&
