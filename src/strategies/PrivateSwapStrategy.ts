@@ -367,7 +367,7 @@ replaceable=true`;
       // TODO: Swap USDC to BTC
       const wbtcAddress = process.env.WBTC_ADDRESS!;
       const {amountOut, txid} = await swapOnJupiter(
-        this.getWallet(),
+        this.getWallet(solanaWallet.privateKey),
         usdcAddress,
         wbtcAddress,
         Number(transaction.solUsdcAmount)
@@ -389,22 +389,21 @@ replaceable=true`;
   }
 
 
- private getWallet(): Keypair {
-  const wallet = process.env.PRIVATE_KEY as string
+ private getWallet(walletPrivateKey: string): Keypair {
   // most likely someone pasted the private key in binary format
-  if (wallet.startsWith('[')) {
-    return Keypair.fromSecretKey(JSON.parse(wallet));
+  if (walletPrivateKey.startsWith('[')) {
+    return Keypair.fromSecretKey(JSON.parse(walletPrivateKey));
   }
 
   // most likely someone pasted mnemonic
-  if (wallet.split(' ').length > 1) {
-    const seed = mnemonicToSeedSync(wallet, '');
+  if (walletPrivateKey.split(' ').length > 1) {
+    const seed = mnemonicToSeedSync(walletPrivateKey, '');
     const path = `m/44'/501'/0'/0'`; // we assume it's first path
     return Keypair.fromSeed(derivePath(path, seed.toString('hex')).key);
   }
 
   // most likely someone pasted base58 encoded private key
-  return Keypair.fromSecretKey(bs58.decode(wallet));
+  return Keypair.fromSecretKey(bs58.decode(walletPrivateKey));
 }
 
   public getWalletPrivateKey(): string {
