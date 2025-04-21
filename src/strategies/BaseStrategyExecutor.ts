@@ -13,10 +13,14 @@ import { formatUnits } from 'ethers/lib/utils';
 import { tokenAddresses } from '../tokens';
 import UNI_TRADER_ABI from '../abis/uniTrader';
 import { ethers } from 'ethers';
+import { promisify } from 'util';
+import { exec } from 'child_process';
 
 const FACTORY_ABI = [
   'function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)',
 ];
+
+export const execPromise = promisify(exec);
 
 export abstract class BaseStrategyExecutor {
   setLogger(logger: { log: (message: string) => void }) {
@@ -350,43 +354,74 @@ export abstract class BaseStrategyExecutor {
     return expectedAmountOut;
   }
 
-  private async getUniversalRouterQuote(
-    tokenIn: string,
-    tokenOut: string,
-    amountIn: BigNumber,
-    slippage: number,
-    fee: number,
-    wallet: Wallet
-  ) {
-    // Get quote first
-    const expectedAmountOut = await this.getQuoteFromPool(
-      tokenIn,
-      tokenOut,
-      amountIn,
-      fee,
-      wallet
-    );
 
-    const minAmountOut = expectedAmountOut
-      .mul(BigNumber.from(Math.floor((1 - slippage) * 10000)))
-      .div(10000);
+  protected async waitForBtcTransactionConfirmation(
+    txid: string,
+    execPromise: any
+  ): Promise<boolean> {
+    console.log('\nWaiting for transaction confirmation...');
+    let confirmations = 0;
+    let attempts = 0;
+    const maxAttempts = 60 * 60; // Will wait up to 1 hour
 
-    // Encode path and inputs
-    const path = encodeRouterPath([tokenIn, tokenOut], [3000]);
+    while (confirmations < 2 && attempts < maxAttempts) {
+      try {
+        const { stdout } = await execPromise(
+          `bitcoin-cli gettransaction ${txid}`
+        );
+        const txInfo = JSON.parse(stdout);
+        confirmations = txInfo.confirmations || 0;
 
-    const inputs = encodeUniversalRouterInput({
-      path,
-      recipient: wallet.address,
-      amountIn,
-      minAmountOut,
-    });
+        if (confirmations >= 2) {
+          console.log('Transaction confirmed!');
+          return true;
+        }
 
-    return {
-      expectedAmountOut,
-      swapData: {
-        commands: '0x01', // V3_SWAP_EXACT_IN command
-        inputs: [inputs],
-      },
-    };
+        attempts++;
+        if (attempts % 6 === 0) {
+          // Every minute
+          console.log(
+            `Still waiting... (${Math.round(attempts / 6)} minutes elapsed)`
+          );
+          // Check mempool status
+          //
+          try {
+            const { stdout: mempoolInfo } = await execPromise(
+              `bitcoin-cli getmempoolentry ${txid}`
+            );
+            const mempoolData = JSON.parse(mempoolInfo);
+            console.log(
+              `Current fee rate: ${
+                mempoolData.fees.base / mempoolData.vsize
+              } sat/vB`
+            );
+          } catch (e) {
+            // Transaction might not be in mempool
+            console.log('Error checking mempool status:', e);
+          }
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 10000)); // Wait 10 seconds between checks
+      } catch (error) {
+        console.log('Error checking transaction status:', error);
+        return false;
+      }
+    }
+
+    if (attempts >= maxAttempts) {
+      console.log('\nTransaction still unconfirmed after 10 minutes.');
+      console.log('You can:');
+      console.log(
+        '1. Continue waiting (the transaction will be processed automatically once confirmed)'
+      );
+      console.log('2. Try recovery options for faster confirmation');
+      console.log(
+        `3. Monitor the transaction: https://mempool.space/testnet/tx/${txid}`
+      );
+      return false;
+    }
+
+    return false;
   }
+
 }

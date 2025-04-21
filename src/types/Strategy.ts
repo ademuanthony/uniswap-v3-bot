@@ -105,45 +105,11 @@ export interface LPPosition {
   entryPrice: bigint;
 }
 
-export interface NewTokenStrategy extends BaseStrategy {
-  type: 'new_token';
-  initialBuyAmount: string; // Amount in quote token (e.g., BNB/BUSD) to buy with
-  profitTargets: {
-    firstTarget: {
-      percentage: number; // 250 for 2.5x
-      sellPercentage: number; // 75 for 75%
-    };
-    finalTarget: {
-      percentage: number; // 1000 for 10x
-      sellPercentage: number; // 100 for remaining
-    };
-  };
-  maxSlippage: number;
-  safetyChecks: {
-    minLiquidity: string; // Minimum liquidity in quote token
-    maxBuyTax: number; // Maximum acceptable buy tax percentage
-    maxSellTax: number; // Maximum acceptable sell tax percentage
-  };
-}
-
-export interface NewTokenPosition {
-  tokenAddress: string;
-  entryPrice: string;
-  amount: string;
-  timestamp: number;
-  firstTargetHit: boolean;
-  remainingAmount: string | null;
-}
-
-interface TokenSafetyCheck {
-  mintingEnabled: boolean;
-  hiddenMintFunctions: boolean;
-  hasBuySellTax: boolean;
-  canBlacklist: boolean;
-  isSafe: boolean;
-  hasHoneypotCode: boolean;
-  hasBackdoors: boolean;
-  hasAssemblyCode: boolean;
-  buyTaxPercentage: number;
-  sellTaxPercentage: number;
+export interface PrivateSwapStrategy extends BaseStrategy {
+  type: 'private_swap';
+  amount: string; // Amount of BTC to swap
+  interval: number; // Interval in seconds
+  generateNewSolanaWallet: boolean; // Whether to generate new Solana wallet for each swap
+  slippage: number; // Allowed slippage for swaps
+  btcFeeRate: number; // BTC fee rate in sats/vB
 }

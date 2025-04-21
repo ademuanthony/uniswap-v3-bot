@@ -5,14 +5,7 @@ import { MerkleTree } from './merkleTree';
 import { toFixedHex, parseWithdrawNote } from './tornado-utils';
 import { buffPedersenHash } from './pedersen';
 import { config } from './tornado.config';
-
-// Contract ABIs
-const TornadoProxyABI = [
-  'function deposit(address _tornado, bytes32 _commitment) payable',
-  'function deposit(address _tornado, bytes32 _commitment, address _token, uint256 _amount)',
-  'function withdraw(address _tornado, bytes memory _proof, bytes32 _root, bytes32 _nullifierHash, address payable _recipient, address payable _relayer, uint256 _fee, uint256 _refund) external',
-  'function isSpent(bytes32 _nullifierHash) public view returns (bool)',
-];
+import TornadoProxyABI from './tornado.abi';
 
 const ERC20ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
@@ -116,24 +109,37 @@ export async function deposit({
       }
     }
 
+    console.log('8');
+
     // 8. Estimate gas and prepare transaction
     const value =
       currency.toLowerCase() === 'eth'
         ? ethers.utils.parseEther(amount.toString())
         : BigNumber.from(0);
 
-    const gasLimit = await tornadoProxy.estimateGas.deposit(...params, {
-      value,
-    });
+    console.log('8.1');
+
+    const gasLimit = await tornadoProxy.estimateGas.deposit(
+      poolAddress,
+      commitmentHex,
+      {
+        value,
+      }
+    );
+
+    console.log('8.2');
+
     const gasPrice = await provider.getGasPrice();
 
+    console.log('9');
     // 9. Send deposit transaction
-    const tx = await tornadoProxy.deposit(...params, {
+    const tx = await tornadoProxy.deposit(poolAddress, commitmentHex, {
       value,
       gasLimit: gasLimit.mul(12).div(10), // Add 20% buffer
       gasPrice,
     });
 
+    console.log('10');
     // 10. Wait for transaction confirmation
     const receipt = await tx.wait();
 

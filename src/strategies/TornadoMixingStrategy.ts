@@ -139,87 +139,7 @@ export class TornadoMixingExecutor
         );
 
       for (const { fileName, note } of notes) {
-        try {
-          // Generate a random recipient wallet
-          const recipientWallet = ethers.Wallet.createRandom();
-
-          // Select a random relayer
-          const relayer =
-            this.strategy.relayerUrls[
-              Math.floor(Math.random() * this.strategy.relayerUrls.length)
-            ];
-
-          const provider = new ethers.providers.JsonRpcProvider(
-            process.env.ETH_RPC
-          );
-          const signer = new ethers.Wallet(
-            this.getWalletPrivateKey(),
-            provider
-          );
-
-          const result = await withdraw({
-            note: note.noteString,
-            recipient: recipientWallet.address,
-            provider,
-            signer,
-            relayer,
-            fee: '0.001',
-          });
-
-          // Create a timestamped directory for this withdrawal
-          const withdrawalTime = Date.now();
-          const withdrawalDir = path.join(
-            this.processedDir,
-            withdrawalTime.toString()
-          );
-          fs.mkdirSync(withdrawalDir, { recursive: true });
-
-          // Move and update the note file
-          note.processed = true;
-          fs.writeFileSync(
-            path.join(withdrawalDir, `note-${fileName}`),
-            JSON.stringify(
-              {
-                ...note,
-                withdrawalTxHash: result.txHash,
-                withdrawalTime,
-                recipientAddress: recipientWallet.address,
-              },
-              null,
-              2
-            )
-          );
-
-          // Save recipient wallet info in the same directory
-          fs.writeFileSync(
-            path.join(withdrawalDir, 'wallet.json'),
-            JSON.stringify(
-              {
-                address: recipientWallet.address,
-                privateKey: recipientWallet.privateKey,
-                withdrawalTxHash: result.txHash,
-                withdrawalTime,
-                originalNote: fileName,
-              },
-              null,
-              2
-            )
-          );
-
-          // Remove original note file
-          fs.unlinkSync(path.join(this.notesDir, fileName));
-
-          this.totalMixed += Number(note.amount);
-          this.log(
-            `Scheduled withdrawal successful to ${recipientWallet.address}. Files saved in ${withdrawalDir}`
-          );
-        } catch (error) {
-          this.log(
-            `Scheduled withdrawal failed for note ${fileName}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-        }
+        await this.processWithdrawal(note, fileName);
       }
     } catch (error) {
       this.log(
@@ -228,6 +148,92 @@ export class TornadoMixingExecutor
         }`
       );
     }
+  }
+
+  private async processWithdrawal(note: Note, fileName: string) {
+    try {
+      // Generate a random recipient wallet
+      const recipientWallet = ethers.Wallet.createRandom();
+
+      // Select a random relayer
+      const relayer =
+        this.strategy.relayerUrls[
+          Math.floor(Math.random() * this.strategy.relayerUrls.length)
+        ];
+
+      const provider = new ethers.providers.JsonRpcProvider(
+        process.env.ETH_RPC
+      );
+      const signer = new ethers.Wallet(
+        this.getWalletPrivateKey(),
+        provider
+      );
+
+      const result = await withdraw({
+        note: note.noteString,
+        recipient: recipientWallet.address,
+        provider,
+        signer,
+        relayer,
+        fee: '0.001',
+      });
+
+      // Create a timestamped directory for this withdrawal
+      const withdrawalTime = Date.now();
+      const withdrawalDir = path.join(
+        this.processedDir,
+        withdrawalTime.toString()
+      );
+      fs.mkdirSync(withdrawalDir, { recursive: true });
+
+      // Move and update the note file
+      note.processed = true;
+      fs.writeFileSync(
+        path.join(withdrawalDir, `note-${fileName}`),
+        JSON.stringify(
+          {
+            ...note,
+            withdrawalTxHash: result.txHash,
+            withdrawalTime,
+            recipientAddress: recipientWallet.address,
+          },
+          null,
+          2
+        )
+      );
+
+      // Save recipient wallet info in the same directory
+      fs.writeFileSync(
+        path.join(withdrawalDir, 'wallet.json'),
+        JSON.stringify(
+          {
+            address: recipientWallet.address,
+            privateKey: recipientWallet.privateKey,
+            withdrawalTxHash: result.txHash,
+            withdrawalTime,
+            originalNote: fileName,
+          },
+          null,
+          2
+        )
+      );
+
+      // Remove original note file
+      fs.unlinkSync(path.join(this.notesDir, fileName));
+
+      this.totalMixed += Number(note.amount);
+      this.log(
+        `Scheduled withdrawal successful to ${recipientWallet.address}. Files saved in ${withdrawalDir}`
+      );
+    } catch (error) {
+      this.log(
+        `Scheduled withdrawal failed for note ${fileName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    
+    
   }
 
   private scheduleNextDeposit() {
@@ -324,8 +330,23 @@ export class TornadoMixingExecutor
     switch (action.toLowerCase()) {
       case 'status':
         return JSON.stringify(await this.getStatus(), null, 2);
+      case 'deposit':
+        await this.executeDeposit();
+        return 'Deposit command received';
+      case 'withdraw':
+        return this.handleWithdrawalCommand(args);
       default:
-        return `Unknown command: ${action}. Available commands: status`;
+        return `Unknown command: ${action}. Available commands: status, withdraw`;
     }
+  }
+
+  private async handleWithdrawalCommand(args: string[]): Promise<string> {
+    let noteFile = args[0];
+    if (!noteFile.endsWith('.json')) {
+      noteFile = `${noteFile}.json`;
+    }
+    const note = JSON.parse(fs.readFileSync(path.join(this.notesDir, noteFile), 'utf8')) as Note;
+    await this.processWithdrawal(note, noteFile);
+    return `Withdrawal command received for note ${noteFile}`;
   }
 }

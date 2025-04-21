@@ -1,5 +1,5 @@
 import { BaseStrategy, StrategyExecutor } from '../types/Strategy';
-import { BaseStrategyExecutor } from './BaseStrategyExecutor';
+import { BaseStrategyExecutor, execPromise } from './BaseStrategyExecutor';
 import { Web3Helper } from '../utils/web3';
 import dotenv from 'dotenv';
 
@@ -17,7 +17,6 @@ import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { ethers } from 'ethers';
 import fs from 'fs';
-const execPromise = promisify(exec);
 
 dotenv.config();
 
@@ -267,7 +266,7 @@ export class BTCBridgeExecutor
 
     // Wait for confirmation
     if (
-      !(await this.waitForTransactionConfirmation(
+      !(await this.waitForBtcTransactionConfirmation(
         this.currentDeposit.bitcoinTxHash,
         execPromise
       ))
@@ -334,75 +333,6 @@ export class BTCBridgeExecutor
     const amount = args[0];
 
     await this.startNewDeposit(amount);
-  }
-
-  private async waitForTransactionConfirmation(
-    txid: string,
-    execPromise: any
-  ): Promise<boolean> {
-    console.log('\nWaiting for transaction confirmation...');
-    let confirmations = 0;
-    let attempts = 0;
-    const maxAttempts = 60 * 60; // Will wait up to 1 hour
-
-    while (confirmations < 2 && attempts < maxAttempts) {
-      try {
-        const { stdout } = await execPromise(
-          `bitcoin-cli gettransaction ${txid}`
-        );
-        const txInfo = JSON.parse(stdout);
-        confirmations = txInfo.confirmations || 0;
-
-        if (confirmations >= 2) {
-          console.log('Transaction confirmed!');
-          return true;
-        }
-
-        attempts++;
-        if (attempts % 6 === 0) {
-          // Every minute
-          console.log(
-            `Still waiting... (${Math.round(attempts / 6)} minutes elapsed)`
-          );
-          // Check mempool status
-          //
-          try {
-            const { stdout: mempoolInfo } = await execPromise(
-              `bitcoin-cli getmempoolentry ${txid}`
-            );
-            const mempoolData = JSON.parse(mempoolInfo);
-            console.log(
-              `Current fee rate: ${
-                mempoolData.fees.base / mempoolData.vsize
-              } sat/vB`
-            );
-          } catch (e) {
-            // Transaction might not be in mempool
-            console.log('Error checking mempool status:', e);
-          }
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 10000)); // Wait 10 seconds between checks
-      } catch (error) {
-        console.log('Error checking transaction status:', error);
-        return false;
-      }
-    }
-
-    if (attempts >= maxAttempts) {
-      console.log('\nTransaction still unconfirmed after 10 minutes.');
-      console.log('You can:');
-      console.log(
-        '1. Continue waiting (the transaction will be processed automatically once confirmed)'
-      );
-      console.log('2. Try recovery options for faster confirmation');
-      console.log(
-        `3. Monitor the transaction: https://mempool.space/testnet/tx/${txid}`
-      );
-      return false;
-    }
-
-    return false;
   }
 
   public async getStatus(): Promise<any> {
