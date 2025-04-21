@@ -8,16 +8,12 @@ import {
   transferXMR,
 } from '../utils/monero';
 
-import bs58 from 'bs58';
-import { mnemonicToSeedSync } from 'bip39';
-import { derivePath } from 'ed25519-hd-key';
-
 import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
-import { getTokenBalance } from '../solana/utils';
+import { getSolanaWallet, getTokenBalance } from '../solana/utils';
 import { swapOnJupiter } from '../utils/jupiter';
 
 dotenv.config();
@@ -367,7 +363,7 @@ replaceable=true`;
       // TODO: Swap USDC to BTC
       const wbtcAddress = process.env.WBTC_ADDRESS!;
       const {amountOut, txid} = await swapOnJupiter(
-        this.getWallet(solanaWallet.privateKey),
+        getSolanaWallet(solanaWallet.privateKey),
         usdcAddress,
         wbtcAddress,
         Number(transaction.solUsdcAmount)
@@ -387,24 +383,6 @@ replaceable=true`;
   public getName(): string {
     return this.strategy.name;
   }
-
-
- private getWallet(walletPrivateKey: string): Keypair {
-  // most likely someone pasted the private key in binary format
-  if (walletPrivateKey.startsWith('[')) {
-    return Keypair.fromSecretKey(JSON.parse(walletPrivateKey));
-  }
-
-  // most likely someone pasted mnemonic
-  if (walletPrivateKey.split(' ').length > 1) {
-    const seed = mnemonicToSeedSync(walletPrivateKey, '');
-    const path = `m/44'/501'/0'/0'`; // we assume it's first path
-    return Keypair.fromSeed(derivePath(path, seed.toString('hex')).key);
-  }
-
-  // most likely someone pasted base58 encoded private key
-  return Keypair.fromSecretKey(bs58.decode(walletPrivateKey));
-}
 
   public getWalletPrivateKey(): string {
     return process.env[this.strategy.privateKeyEnvKey] as string;

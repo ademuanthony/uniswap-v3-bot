@@ -7,12 +7,16 @@ import { DEFAULT_SLIPPAGE } from '../types/Strategy';
 import { Web3Helper } from '../utils/web3';
 import { formatUnits, parseUnits } from 'ethers/lib/utils';
 import { Contract } from 'ethers';
+import { getSolanaWallet } from '../solana/utils';
+import { swapOnJupiter } from '../utils/jupiter';
 
 dotenv.config();
 
 export interface DCAStrategy extends BaseStrategy {
   type: 'dca';
+  network: 'ethereum' | 'solana';
   amount: string; // Amount of token_in to swap
+  tokenInDecimals: number;
   slippage: number;
 }
 
@@ -59,25 +63,39 @@ export class DCAExecutor
   }
 
   async execute(): Promise<void> {
-    this.log(`Executing DCA strategy ${this.strategy.name}`);
-    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
-    const tokenIn = tokenAddresses[this.strategy.base_token.toUpperCase()];
-    const tokenOut = tokenAddresses[this.strategy.quote_token.toUpperCase()];
-    const tokenInDecimals = await getTokenDecimals(tokenIn, wallet);
-    this.log(`Token in: ${tokenIn}`);
-    this.log(`Token out: ${tokenOut}`);
-    this.log(`Token in decimals: ${tokenInDecimals}`);
-    const amountIn = parseUnits(this.strategy.amount, tokenInDecimals);
-    this.log(`Amount in: ${amountIn}`);
+    if (this.strategy.network === 'ethereum') {
+      this.log(`Executing DCA strategy ${this.strategy.name} on Ethereum`);
+      const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+      const tokenIn = tokenAddresses[this.strategy.base_token.toUpperCase()];
+      const tokenOut = tokenAddresses[this.strategy.quote_token.toUpperCase()];
+      const tokenInDecimals = await getTokenDecimals(tokenIn, wallet);
+      this.log(`Token in: ${tokenIn}`);
+      this.log(`Token out: ${tokenOut}`);
+      this.log(`Token in decimals: ${tokenInDecimals}`);
+      const amountIn = parseUnits(this.strategy.amount, tokenInDecimals);
+      this.log(`Amount in: ${amountIn}`);
 
-    const slippage = this.strategy.slippage ?? DEFAULT_SLIPPAGE.DCA;
-    await this.executeSwap({
-      tokenIn,
-      tokenOut,
-      amountIn,
-      slippage,
-      wallet,
-    });
+      const slippage = this.strategy.slippage ?? DEFAULT_SLIPPAGE.DCA;
+      await this.executeSwap({
+        tokenIn,
+        tokenOut,
+        amountIn,
+        slippage,
+        wallet,
+        });
+    } else {
+      this.log(`Executing DCA strategy ${this.strategy.name} on Solana`);
+      const wallet = getSolanaWallet(this.getWalletPrivateKey());
+      const tokenIn = tokenAddresses[this.strategy.base_token.toUpperCase()];
+      const tokenOut = tokenAddresses[this.strategy.quote_token.toUpperCase()];
+      this.log(`Token in: ${tokenIn}`);
+      this.log(`Token out: ${tokenOut}`);
+
+      const amountIn = Number(this.strategy.amount) * 10 ** this.strategy.tokenInDecimals;
+
+      const result = await swapOnJupiter(wallet, tokenIn, tokenOut, amountIn);
+      this.log(`Swap completed: ${result.txid}`);
+    }
   }
 
   public getName(): string {

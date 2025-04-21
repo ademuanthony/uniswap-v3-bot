@@ -69,8 +69,10 @@ npm start
       "privateKeyEnvKey": "STRATEGY_1_KEY",
       "base_token": "USDC",
       "quote_token": "ETH",
+      "network": "ethereum",
       "interval": 3600,
       "amount": "100",
+      "tokenInDecimals": 6,
       "slippage": 0.5
     }
   ]
