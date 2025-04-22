@@ -1,10 +1,6 @@
 import { readFile } from 'fs/promises';
 import path from 'path';
-import {
-  Config,
-  Strategy,
-  LPStrategy,
-} from './types/Strategy';
+import { Config, Strategy, LPStrategy } from './types/Strategy';
 import { DCAStrategy, DCAExecutor } from './strategies/DCAStrategy';
 import { GridStrategy, GridExecutor } from './strategies/GridStrategy';
 import { CLIManager } from './cli/CLIManager';
@@ -29,6 +25,8 @@ function createExecutor(strategy: Strategy) {
     case 'dca': {
       if (
         'amount' in strategy &&
+        'network' in strategy &&
+        'tokenInDecimals' in strategy &&
         'slippage' in strategy &&
         'interval' in strategy &&
         'base_token' in strategy &&

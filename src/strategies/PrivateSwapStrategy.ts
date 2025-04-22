@@ -59,7 +59,7 @@ interface SwapTransaction {
   };
 }
 
-type Currency = 'BTC' | 'XMR' | 'USDC';
+type Currency = 'btc' | 'xmr' | 'sol' | 'usdc';
 
 export class PrivateSwapExecutor
   extends BaseStrategyExecutor
@@ -187,6 +187,8 @@ export class PrivateSwapExecutor
   private async initiateChangeNowSwap(
     fromCurrency: Currency,
     toCurrency: Currency,
+    fromNetwork: string,
+    toNetwork: string,
     fromAmount: string,
     address: string
   ): Promise<{
@@ -199,6 +201,8 @@ export class PrivateSwapExecutor
       {
         fromCurrency,
         toCurrency,
+        fromNetwork,
+        toNetwork,
         fromAmount,
         address,
         flow: 'standard',
@@ -283,8 +287,10 @@ replaceable=true`;
     try {
       // Initiate BTC -> XMR swap
       const btcToXmr = await this.initiateChangeNowSwap(
-        'BTC',
-        'XMR',
+        'btc',
+        'xmr',
+        'btc',
+        'xmr',
         this.strategy.amount,
         xmrWallet.address
       );
@@ -325,8 +331,10 @@ replaceable=true`;
 
       // TODO: Convert XMR to USDC on solana
       const xmrToSolBtc = await this.initiateChangeNowSwap(
-        'XMR',
-        'USDC',
+        'xmr',
+        'sol',
+        'xmr',
+        'solana',
         transaction.xmrAmount,
         solanaWallet.address
       );

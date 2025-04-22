@@ -11,7 +11,7 @@ import { jupiterRateLimiter } from './rateLimiter';
 dotenv.config();
 
 // Solana setup
-const RPC_URL = process.env.RPC_URL!;
+const RPC_URL = process.env.SOLANA_RPC_ENDPOINT!;
 const connection = new Connection(RPC_URL, 'confirmed');
 
 // Jupiter API setup
