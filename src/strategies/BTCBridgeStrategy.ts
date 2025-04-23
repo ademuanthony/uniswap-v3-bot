@@ -13,10 +13,23 @@ import {
 import ECPairFactory from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
 import * as bitcoin from 'bitcoinjs-lib';
-import { exec, execSync } from 'child_process';
-import { promisify } from 'util';
 import { ethers } from 'ethers';
 import fs from 'fs';
+import path from 'path';
+import { Keypair, PublicKey } from '@solana/web3.js';
+import {
+  getSolanaWallet,
+  getSolBalance,
+  getTokenBalance,
+} from '../solana/utils';
+import { swapOnJupiter } from '../utils/jupiter';
+import {
+  createMoneroWallet,
+  getXmrBalance,
+  openWallet,
+  transferXMR,
+} from '../utils/monero';
+import axios from 'axios';
 
 dotenv.config();
 
@@ -53,12 +66,47 @@ type DepositState = {
     | 'failed';
 };
 
+type SwapTransaction = {
+  id: string;
+  timestamp: number;
+  status:
+    | 'pending'
+    | 'btc_sent'
+    | 'xmr_received'
+    | 'xmr_sent'
+    | 'usdc_received'
+    | 'finalizing'
+    | 'completed'
+    | 'failed';
+  btcAmount: string;
+  xmrAmount: string;
+  solUsdcAmount: string;
+  solBtcAmount: string;
+  btcTxHash?: string;
+  xmrTxHash?: string;
+  solTxHash?: string;
+  intermediateWallet: {
+    xmrAddress: string;
+    filename: string;
+    password: string;
+  };
+  destinationWallet: {
+    solanaAddress: string;
+    privateKey?: string;
+  };
+};
+
+type Currency = 'btc' | 'xmr' | 'sol' | 'usdc' | 'tbtc';
+
 export interface BTCBridgeStrategy extends BaseStrategy {
   type: 'btc_bridge';
   amount: string; // Amount of BTC to bridge
   interval: number; // Interval in seconds
   btcFeeRate: number; // BTC network fee rate in sats/vB
   privateKeyEnvKey: string;
+  targetNetwork: 'ethereum' | 'solana';
+  targetToken: 'tbtc' | 'usdc' | 'sol' | 'wbtc';
+  generateNewSolanaWallet?: boolean; // Whether to generate new Solana wallet for each swap
 }
 
 export class BTCBridgeExecutor
@@ -69,13 +117,16 @@ export class BTCBridgeExecutor
   private _isRunning: boolean = false;
   private interval?: NodeJS.Timeout;
   private currentDeposit?: DepositState;
+  private currentTransaction?: SwapTransaction;
   private totalMinted: number = 0;
   private storageDir = './.data/btc_bridge';
+  private transactions: SwapTransaction[] = [];
 
   constructor(strategy: BTCBridgeStrategy) {
     super();
     this.strategy = strategy;
     this.initStorage();
+    this.loadTransactions();
   }
 
   private initStorage() {
@@ -91,7 +142,6 @@ export class BTCBridgeExecutor
 
     try {
       const receipt = this.currentDeposit.deposit.getReceipt();
-      // Store the complete receipt without modification
       const backupData = {
         receipt,
         currentDeposit: this.currentDeposit,
@@ -147,13 +197,492 @@ export class BTCBridgeExecutor
   }
 
   private async execute(): Promise<void> {
+    if (this.strategy.targetNetwork === 'ethereum') {
+      await this.executeEthereumBridge();
+    } else {
+      await this.executeSolanaBridge();
+    }
+  }
+
+  private async executeEthereumBridge(): Promise<void> {
     if (!this.currentDeposit) {
-      // Start new deposit process
       await this.startNewDeposit(this.strategy.amount);
       return;
     }
 
     await this.triggerMint();
+  }
+
+  private async executeSolanaBridge(): Promise<void> {
+    if (this.currentTransaction) {
+      await this.processCurrentTransaction();
+      return;
+    }
+
+    await this.startNewSwap();
+  }
+
+  private async startNewSwap(): Promise<void> {
+    // Create intermediate XMR wallet
+    const xmrWallet = await this.createIntermediateXMRWallet();
+
+    // Create Solana wallet if configured
+    const solanaWallet = this.strategy.generateNewSolanaWallet
+      ? await this.createSolanaWallet()
+      : {
+          address: process.env.SOLANA_DESTINATION_ADDRESS!,
+          privateKey: process.env.SOLANA_DESTINATION_PRIVATE_KEY!,
+        };
+
+    // Create new transaction record
+    this.currentTransaction = {
+      id: `swap_${Date.now()}`,
+      timestamp: Date.now(),
+      status: 'pending',
+      btcAmount: this.strategy.amount,
+      xmrAmount: '0',
+      solUsdcAmount: '0',
+      solBtcAmount: '0',
+      intermediateWallet: {
+        xmrAddress: xmrWallet.address,
+        filename: xmrWallet.filename,
+        password: xmrWallet.password,
+      },
+      destinationWallet: {
+        solanaAddress: solanaWallet.address,
+        privateKey: solanaWallet.privateKey,
+      },
+    };
+
+    await this.processCurrentTransaction();
+  }
+
+  private async processCurrentTransaction(): Promise<void> {
+    if (!this.currentTransaction) return;
+
+    try {
+      switch (this.currentTransaction.status) {
+        case 'pending':
+          await this.processPendingTransaction();
+          break;
+        case 'btc_sent':
+          await this.processBtcSentTransaction();
+          break;
+        case 'xmr_received':
+          await this.processXmrReceivedTransaction();
+          break;
+        case 'xmr_sent':
+          await this.processXmrSentTransaction();
+          break;
+        case 'finalizing':
+          await this.processFinalizingTransaction();
+          break;
+        default:
+          break;
+      }
+    } catch (error) {
+      this.currentTransaction.status = 'failed';
+      this.transactions.push(this.currentTransaction);
+      await this.saveTransactions();
+      throw error;
+    }
+  }
+
+  private async processPendingTransaction(): Promise<void> {
+    if (!this.currentTransaction) return;
+
+    // Initiate BTC -> XMR swap
+    const btcToXmr = await this.initiateChangeNowSwap(
+      'btc',
+      'xmr',
+      'btc',
+      'xmr',
+      this.currentTransaction.btcAmount,
+      this.currentTransaction.intermediateWallet.xmrAddress
+    );
+    this.currentTransaction.xmrAmount = btcToXmr.expectedAmount;
+    this.currentTransaction.status = 'btc_sent';
+    await this.saveTransaction(this.currentTransaction);
+
+    const btcTxHash = await this.sendBtc(
+      btcToXmr.payinAddress,
+      this.currentTransaction.btcAmount,
+      this.strategy.btcFeeRate
+    );
+    this.currentTransaction.btcTxHash = btcTxHash;
+
+    await this.processBtcSentTransaction();
+  }
+
+  private async processBtcSentTransaction(): Promise<void> {
+    if (!this.currentTransaction?.btcTxHash) return;
+
+    // Wait for BTC transaction to be confirmed
+    if (
+      !(await this.waitForBtcTransactionConfirmation(
+        this.currentTransaction.btcTxHash,
+        execPromise
+      ))
+    ) {
+      return;
+    }
+
+    // Wait for XMR to arrive
+    const maxWaitTime = 2 * 1000 * 60 * 60; // 2 hours
+    const startTime = Date.now();
+    while (true) {
+      const xmrBalance = await getXmrBalance(
+        this.currentTransaction.intermediateWallet.xmrAddress
+      );
+      if (xmrBalance.balance > 0) {
+        this.currentTransaction.status = 'xmr_received';
+        await this.saveTransaction(this.currentTransaction);
+        break;
+      }
+      if (Date.now() - startTime > maxWaitTime) {
+        throw new Error('XMR not received within 2 hours');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+    }
+
+    await this.processXmrReceivedTransaction();
+  }
+
+  private async processXmrReceivedTransaction(): Promise<void> {
+    if (!this.currentTransaction) return;
+
+    // Convert XMR to target token on Solana
+    const targetToken = this.strategy.targetToken;
+    const xmrToSol = await this.initiateChangeNowSwap(
+      'xmr',
+      targetToken === 'wbtc' ? 'btc' : targetToken,
+      'xmr',
+      'solana',
+      this.currentTransaction.xmrAmount,
+      this.currentTransaction.destinationWallet.solanaAddress
+    );
+
+    this.currentTransaction.solUsdcAmount = xmrToSol.expectedAmount;
+
+    // Send XMR to ChangeNow
+    await transferXMR(
+      this.currentTransaction.intermediateWallet.filename,
+      this.currentTransaction.intermediateWallet.password,
+      xmrToSol.payinAddress,
+      Number(this.currentTransaction.xmrAmount)
+    );
+
+    this.currentTransaction.status = 'xmr_sent';
+    await this.saveTransaction(this.currentTransaction);
+  }
+
+  private async processXmrSentTransaction(): Promise<void> {
+    if (!this.currentTransaction) return;
+
+    const targetToken = this.strategy.targetToken;
+    const tokenAddress = process.env[`${targetToken.toUpperCase()}_ADDRESS`]!;
+
+    // Wait for target token to arrive
+    while (true) {
+      let tokenBalance = 0;
+      if (targetToken === 'sol') {
+        tokenBalance = await getSolBalance(
+          Web3Helper.getSolanaConnection(),
+          new PublicKey(this.currentTransaction.destinationWallet.solanaAddress)
+        );
+      } else {
+        await getTokenBalance(
+          Web3Helper.getSolanaConnection(),
+          new PublicKey(tokenAddress),
+          new PublicKey(this.currentTransaction.destinationWallet.solanaAddress)
+        );
+      }
+
+      if (tokenBalance > 0) {
+        this.currentTransaction.status = 'completed';
+        await this.saveTransaction(this.currentTransaction);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 60000));
+    }
+
+  }
+
+  private async processFinalizingTransaction(): Promise<void> {
+    // No-op for now, can be used for additional cleanup if needed
+  }
+
+  private async createIntermediateXMRWallet(): Promise<{
+    address: string;
+    filename: string;
+    password: string;
+  }> {
+    const password = this.generateRandomPassword();
+    const filename = `xmr_wallet_${Date.now()}`;
+    await createMoneroWallet({
+      filename,
+      language: 'English',
+      password,
+    });
+
+    const walletInfo = await openWallet(filename, '');
+    return {
+      address: walletInfo.address,
+      filename,
+      password,
+    };
+  }
+
+  private async createSolanaWallet(): Promise<{
+    address: string;
+    privateKey: string;
+  }> {
+    const keypair = Keypair.generate();
+    return {
+      address: keypair.publicKey.toString(),
+      privateKey: Buffer.from(keypair.secretKey).toString('hex'),
+    };
+  }
+
+  private generateRandomPassword(): string {
+    return Math.random().toString(36).slice(-8);
+  }
+
+  private async initiateChangeNowSwap(
+    fromCurrency: Currency,
+    toCurrency: Currency,
+    fromNetwork: string,
+    toNetwork: string,
+    fromAmount: string,
+    address: string
+  ): Promise<{
+    id: string;
+    payinAddress: string;
+    expectedAmount: string;
+  }> {
+    const response = await axios.post(
+      'https://api.changenow.io/v2/exchange',
+      {
+        fromCurrency,
+        toCurrency,
+        fromNetwork,
+        toNetwork,
+        fromAmount,
+        address,
+        flow: 'standard',
+      },
+      {
+        headers: {
+          'x-api-key': process.env.CHANGENOW_API_KEY,
+        },
+      }
+    );
+
+    return {
+      id: response.data.id,
+      payinAddress: response.data.payinAddress,
+      expectedAmount: response.data.expectedAmountTo,
+    };
+  }
+
+  private async sendBtc(
+    address: string,
+    amount: string,
+    feeRate: number
+  ): Promise<string> {
+    if (!this.strategy.btcFeeRate) {
+      console.log(
+        `No BTC fee rate set. Using default value of ${FEE_RATES.mainnet.default} sats/vB`
+      );
+      this.strategy.btcFeeRate = FEE_RATES.mainnet.default;
+    }
+
+    const command = `bitcoin-cli -named sendtoaddress \
+address="${address}" \
+amount=${amount} \
+fee_rate=${feeRate} \
+replaceable=true`;
+
+    console.log(`\nExecuting command: ${command}\n`);
+
+    try {
+      const { stdout } = await execPromise(command);
+      const txid = stdout.trim();
+      console.log(`Transaction initiated! TXID: ${txid}`);
+      return txid;
+    } catch (error) {
+      console.log('Error executing bitcoin-cli command:', error);
+      throw error;
+    }
+  }
+
+  private async saveTransaction(transaction: SwapTransaction) {
+    const filePath = path.join(this.storageDir, `${transaction.id}.json`);
+    await fs.promises.writeFile(filePath, JSON.stringify(transaction, null, 2));
+  }
+
+  private async loadTransaction(id: string) {
+    const filePath = path.join(this.storageDir, `${id}.json`);
+    const data = await fs.promises.readFile(filePath, 'utf8');
+    return JSON.parse(data);
+  }
+
+  private async saveTransactions() {
+    const filePath = path.join(this.storageDir, `${this.strategy.key}.json`);
+    await fs.promises.writeFile(
+      filePath,
+      JSON.stringify({ transactions: this.transactions }, null, 2)
+    );
+  }
+
+  private async loadTransactions() {
+    const filePath = path.join(this.storageDir, `${this.strategy.key}.json`);
+    try {
+      if (fs.existsSync(filePath)) {
+        const data = await fs.promises.readFile(filePath, 'utf8');
+        const parsed = JSON.parse(data);
+        this.transactions = parsed.transactions || [];
+      }
+    } catch (error) {
+      this.log(`Error loading transactions: ${error}`);
+      this.transactions = [];
+    }
+  }
+
+  public async getStatus(): Promise<any> {
+    return {
+      name: this.strategy.name,
+      status: this.isRunning() ? 'Running' : 'Stopped',
+      currentDeposit: this.currentDeposit,
+      currentTransaction: this.currentTransaction,
+      transactions: this.transactions,
+      lastUpdate: new Date().toISOString(),
+    };
+  }
+
+  public async handleCommand(action: string, args: string[]): Promise<string> {
+    switch (action.toLowerCase()) {
+      case 'status':
+        return JSON.stringify(await this.getStatus(), null, 2);
+      case 'mint':
+        await this.handleMintCommand(args);
+        return 'Mint command executed';
+      case 'resume':
+        return await this.resumeFromBackup(args[0]);
+      case 'clearbackups':
+        return await this.clearBackups();
+      case 'transactions':
+        return JSON.stringify(this.transactions, null, 2);
+      default:
+        return `Unknown command: ${action}. Available commands: status, mint, resume, clearbackups, transactions`;
+    }
+  }
+
+  public async resumeFromBackup(backupKey: string): Promise<string> {
+    let fileName = `${this.storageDir}/${backupKey}.json`;
+    if (!fs.existsSync(fileName)) {
+      return 'Backup file does not exist';
+    }
+
+    try {
+      const backup = JSON.parse(fs.readFileSync(fileName, 'utf8'));
+
+      if (!backup.receipt || !backup.currentDeposit?.bitcoinRecoveryAddress) {
+        return 'Backup file does not contain a valid deposit receipt';
+      }
+
+      // Convert Buffer data arrays to Hex type using Hex.from()
+      const reconstructedReceipt: DepositReceipt = {
+        depositor: {
+          identifierHex: backup.receipt.depositor.identifierHex,
+          equals: function (other: ChainIdentifier): boolean {
+            return this.identifierHex === other.identifierHex;
+          },
+        },
+        blindingFactor: Hex.from(
+          Buffer.from(backup.receipt.blindingFactor._hex.data)
+        ),
+        walletPublicKeyHash: Hex.from(
+          Buffer.from(backup.receipt.walletPublicKeyHash._hex.data)
+        ),
+        refundPublicKeyHash: Hex.from(
+          Buffer.from(backup.receipt.refundPublicKeyHash._hex.data)
+        ),
+        refundLocktime: Hex.from(
+          Buffer.from(backup.receipt.refundLocktime._hex.data)
+        ),
+      };
+
+      // Reconstruct the TBTC deposit object
+      const provider = new ethers.providers.JsonRpcProvider(
+        process.env.TBTC_ETH_RPC
+      );
+      const signer = new ethers.Wallet(this.getWalletPrivateKey(), provider);
+
+      const sdk =
+        process.env.NETWORK != 'testnet'
+          ? await TBTC.initializeMainnet(signer)
+          : await TBTC.initializeSepolia(signer);
+
+      // Use the reconstructed receipt
+      const deposit = await Deposit.fromReceipt(
+        reconstructedReceipt,
+        sdk.tbtcContracts,
+        sdk.bitcoinClient
+      );
+      backup.currentDeposit.deposit = deposit;
+
+      this.currentDeposit = backup.currentDeposit as DepositState;
+      this.log('Successfully restored deposit from backup');
+      await this.triggerMint();
+      return 'Resume command executed';
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.log(`Error resuming from backup: ${errorMessage}`);
+      return `Failed to resume from backup: ${errorMessage}`;
+    }
+  }
+
+  public async clearBackups(): Promise<string> {
+    const backups = fs.readdirSync(`${this.storageDir}`);
+    backups.forEach((backup) => {
+      fs.unlinkSync(`${this.storageDir}/${backup}`);
+    });
+    return 'Backups cleared';
+  }
+
+  public getName(): string {
+    return this.strategy.name;
+  }
+
+  public getWalletPrivateKey(): string {
+    return process.env[this.strategy.privateKeyEnvKey] as string;
+  }
+
+  public getKey(): string {
+    return this.strategy.key;
+  }
+
+  public async getDisplayInfo(): Promise<string[]> {
+    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
+    const completedSwaps = this.transactions.filter(
+      (t) => t.status === 'completed'
+    ).length;
+
+    return [
+      `Type: BTC Bridge`,
+      `Key: ${this.strategy.key}`,
+      `Wallet: ${wallet.address}`,
+      `Target Network: ${this.strategy.targetNetwork}`,
+      `Target Token: ${this.strategy.targetToken}`,
+      `Amount per bridge: ${this.strategy.amount} BTC`,
+      `Total minted: ${this.totalMinted} BTC`,
+      `Interval: ${this.strategy.interval}s`,
+      `BTC Fee Rate: ${this.strategy.btcFeeRate} sats/vB`,
+      `Completed swaps: ${completedSwaps}`,
+      `Total transactions: ${this.transactions.length}`,
+    ];
   }
 
   private async startNewDeposit(amount: string): Promise<void> {
@@ -292,7 +821,9 @@ export class BTCBridgeExecutor
         this.currentDeposit.status = 'minted';
         this.totalMinted += Number(this.strategy.amount);
 
-        let backupKey = `${this.storageDir}/${this.currentDeposit?.bitcoinRecoveryAddress.slice(0, 10)}.json`;
+        let backupKey = `${
+          this.storageDir
+        }/${this.currentDeposit?.bitcoinRecoveryAddress.slice(0, 10)}.json`;
         if (fs.existsSync(backupKey)) {
           // delete backup
           fs.unlinkSync(backupKey);
@@ -333,129 +864,5 @@ export class BTCBridgeExecutor
     const amount = args[0];
 
     await this.startNewDeposit(amount);
-  }
-
-  public async getStatus(): Promise<any> {
-    return {
-      name: this.strategy.name,
-      status: this.isRunning() ? 'Running' : 'Stopped',
-      currentDeposit: this.currentDeposit,
-      lastUpdate: new Date().toISOString(),
-    };
-  }
-
-  public async handleCommand(action: string, args: string[]): Promise<string> {
-    switch (action.toLowerCase()) {
-      case 'status':
-        return JSON.stringify(await this.getStatus(), null, 2);
-      case 'mint':
-        await this.handleMintCommand(args);
-        return 'Mint command executed';
-      case 'resume':
-        return await this.resumeFromBackup(args[0]);
-      case 'clearbackups':
-        return await this.clearBackups();
-      default:
-        return `Unknown command: ${action}. Available commands: status, mint, resume, clearbackups`;
-    }
-  }
-
-  public async resumeFromBackup(backupKey: string): Promise<string> {
-    let fileName = `${this.storageDir}/${backupKey}.json`;
-    if (!fs.existsSync(fileName)) {
-      return 'Backup file does not exist';
-    }
-
-    try {
-      const backup = JSON.parse(fs.readFileSync(fileName, 'utf8'));
-
-      if (!backup.receipt || !backup.currentDeposit?.bitcoinRecoveryAddress) {
-        return 'Backup file does not contain a valid deposit receipt';
-      }
-
-      // Convert Buffer data arrays to Hex type using Hex.from()
-      const reconstructedReceipt: DepositReceipt = {
-        depositor: {
-          identifierHex: backup.receipt.depositor.identifierHex,
-          equals: function (other: ChainIdentifier): boolean {
-            return this.identifierHex === other.identifierHex;
-          },
-        },
-        blindingFactor: Hex.from(
-          Buffer.from(backup.receipt.blindingFactor._hex.data)
-        ),
-        walletPublicKeyHash: Hex.from(
-          Buffer.from(backup.receipt.walletPublicKeyHash._hex.data)
-        ),
-        refundPublicKeyHash: Hex.from(
-          Buffer.from(backup.receipt.refundPublicKeyHash._hex.data)
-        ),
-        refundLocktime: Hex.from(
-          Buffer.from(backup.receipt.refundLocktime._hex.data)
-        ),
-      };
-
-      // Reconstruct the TBTC deposit object
-      const provider = new ethers.providers.JsonRpcProvider(
-        process.env.TBTC_ETH_RPC
-      );
-      const signer = new ethers.Wallet(this.getWalletPrivateKey(), provider);
-
-      const sdk =
-        process.env.NETWORK != 'testnet'
-          ? await TBTC.initializeMainnet(signer)
-          : await TBTC.initializeSepolia(signer);
-
-      // Use the reconstructed receipt
-      const deposit = await Deposit.fromReceipt(
-        reconstructedReceipt,
-        sdk.tbtcContracts,
-        sdk.bitcoinClient
-      );
-      backup.currentDeposit.deposit = deposit;
-
-      this.currentDeposit = backup.currentDeposit as DepositState;
-      this.log('Successfully restored deposit from backup');
-      await this.triggerMint();
-      return 'Resume command executed';
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      this.log(`Error resuming from backup: ${errorMessage}`);
-      return `Failed to resume from backup: ${errorMessage}`;
-    }
-  }
-
-  public async clearBackups(): Promise<string> {
-    const backups = fs.readdirSync(`${this.storageDir}`);
-    backups.forEach((backup) => {
-      fs.unlinkSync(`${this.storageDir}/${backup}`);
-    });
-    return 'Backups cleared';
-  }
-
-  public getName(): string {
-    return this.strategy.name;
-  }
-
-  public getWalletPrivateKey(): string {
-    return process.env[this.strategy.privateKeyEnvKey] as string;
-  }
-
-  public getKey(): string {
-    return this.strategy.key;
-  }
-
-  public async getDisplayInfo(): Promise<string[]> {
-    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
-    return [
-      `Type: BTC Bridge`,
-      `Key: ${this.strategy.key}`,
-      `Wallet: ${wallet.address}`,
-      `Amount per mint: ${this.strategy.amount} BTC`,
-      `Total minted: ${this.totalMinted} BTC`,
-      `Interval: ${this.strategy.interval}s`,
-      `BTC Fee Rate: ${this.strategy.btcFeeRate} sats/vB`,
-    ];
   }
 }

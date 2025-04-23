@@ -79,7 +79,9 @@ function createExecutor(strategy: Strategy) {
         'amount' in strategy &&
         'interval' in strategy &&
         'btcFeeRate' in strategy &&
-        'privateKeyEnvKey' in strategy
+        'privateKeyEnvKey' in strategy &&
+        'targetNetwork' in strategy &&
+        'targetToken' in strategy
       ) {
         return new BTCBridgeExecutor(strategy as BTCBridgeStrategy);
       }

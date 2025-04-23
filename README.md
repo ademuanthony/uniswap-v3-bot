@@ -178,21 +178,43 @@ This strategy will:
 {
   "strategies": [
     {
-      "name": "BTC Bridge",
+      "name": "BTC Bridge to Ethereum",
       "key": "btcb",
       "type": "btc-bridge",
       "privateKeyEnvKey": "TBTC_PRIVATE_KEY",
       "amount": "0.2",
       "interval": 86400,
-      "btcFeeRate": 70
+      "btcFeeRate": 70,
+      "targetNetwork": "ethereum",
+      "targetToken": "tbtc"
+    },
+    {
+      "name": "BTC Bridge to Solana",
+      "key": "btcb",
+      "type": "btc-bridge",
+      "privateKeyEnvKey": "SOLANA_PRIVATE_KEY",
+      "amount": "0.2",
+      "interval": 86400,
+      "btcFeeRate": 70,
+      "targetNetwork": "solana",
+      "targetToken": "usdc",
+      "generateNewSolanaWallet": true
     }
   ]
 }
 ```
-This strategy will:
-- Bridge 0.2 BTC every 24 hours
-- Use a fee rate of 70 sats/vB
+This strategy supports two modes:
 
+1. Ethereum Mode (tBTC):
+   - Bridge 0.2 BTC every 24 hours to Ethereum
+   - Convert BTC to tBTC
+   - Use a fee rate of 70 sats/vB
+
+2. Solana Mode (USDC/SOL/WBTC):
+   - Bridge 0.2 BTC every 24 hours to Solana
+   - Convert BTC to target token (USDC, SOL, or WBTC)
+   - Optionally generate new Solana wallet for each bridge
+   - Use a fee rate of 70 sats/vB
 
 ## CLI Commands
 
