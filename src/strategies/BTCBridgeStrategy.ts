@@ -219,10 +219,10 @@ export class BTCBridgeExecutor
       return;
     }
 
-    await this.startNewSwap();
+    await this.startNewSwap(this.strategy.amount);
   }
 
-  private async startNewSwap(): Promise<void> {
+  private async startNewSwap(amount: string): Promise<void> {
     // Create intermediate XMR wallet
     const xmrWallet = await this.createIntermediateXMRWallet();
 
@@ -239,7 +239,7 @@ export class BTCBridgeExecutor
       id: `swap_${Date.now()}`,
       timestamp: Date.now(),
       status: 'pending',
-      btcAmount: this.strategy.amount,
+      btcAmount: amount,
       xmrAmount: '0',
       solUsdcAmount: '0',
       solBtcAmount: '0',
@@ -673,7 +673,6 @@ replaceable=true`;
     return [
       `Type: BTC Bridge`,
       `Key: ${this.strategy.key}`,
-      `Wallet: ${wallet.address}`,
       `Target Network: ${this.strategy.targetNetwork}`,
       `Target Token: ${this.strategy.targetToken}`,
       `Amount per bridge: ${this.strategy.amount} BTC`,
@@ -851,7 +850,7 @@ replaceable=true`;
   }
 
   private async handleMintCommand(args: string[]) {
-    if (this.currentDeposit) {
+    if (this.currentDeposit || this.currentTransaction) {
       console.log('Mint already in progress');
       return;
     }
@@ -863,6 +862,10 @@ replaceable=true`;
 
     const amount = args[0];
 
-    await this.startNewDeposit(amount);
+    if (this.strategy.targetNetwork === 'ethereum') {
+      await this.startNewDeposit(amount);
+    } else {
+      await this.startNewSwap(amount);
+    }
   }
 }
