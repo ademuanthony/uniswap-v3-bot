@@ -1,6 +1,7 @@
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token';
 
+const fs = require('fs');
 
 import bs58 from 'bs58';
 import { mnemonicToSeedSync } from 'bip39';
@@ -47,3 +48,21 @@ export function getSolanaWallet(walletPrivateKey: string): Keypair {
   // most likely someone pasted base58 encoded private key
   return Keypair.fromSecretKey(bs58.decode(walletPrivateKey));
 }
+
+export const getSimulatedUnits = async (connection: Connection, tx: VersionedTransaction) => {
+  const simulation = await connection.simulateTransaction(tx, {
+    replaceRecentBlockhash: true,
+    sigVerify: false,
+  })
+  if (simulation.value.err) {
+    console.log('getSimulatedUnits', simulation.value.err)
+    return undefined
+  }
+  return simulation.value.unitsConsumed
+}
+
+export const importWallet = (filePath: string) => {
+  const walletString = fs.readFileSync(filePath, 'utf-8');
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(walletString)));
+};
+
