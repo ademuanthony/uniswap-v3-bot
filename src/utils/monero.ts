@@ -15,10 +15,9 @@ interface CreateWalletParams {
 }
 
 async function rpcCall(method: string, params: object = {}) {
+  console.log(`RPC call: ${method} ${JSON.stringify({ RPC_AUTH, RPC_URL })}`);
   const DigestFetch = (await import('digest-fetch')).default;
   const client = new DigestFetch(RPC_AUTH.username, RPC_AUTH.password);
-
-  console.log(`RPC call: ${method} ${JSON.stringify({ RPC_AUTH, RPC_URL })}`);
   const response = await client.fetch(RPC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
