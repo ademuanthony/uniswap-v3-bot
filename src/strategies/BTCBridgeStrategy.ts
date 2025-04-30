@@ -25,6 +25,7 @@ import {
 import { swapOnJupiter } from '../utils/jupiter';
 import {
   createMoneroWallet,
+  estimateXmrFee,
   getXmrBalance,
   openWallet,
   transferXMR,
@@ -39,8 +40,8 @@ const FEE_RATES = {
     urgent: 1500,
   },
   mainnet: {
-    default: 4, // Normal priority
-    urgent: 6, // High priority for stuck transactions
+    default: 5,
+    urgent: 15,
   },
 };
 
@@ -254,6 +255,10 @@ export class BTCBridgeExecutor
       },
     };
 
+    await this.saveTransaction(this.currentTransaction);
+
+    this.log(`New swap started. Solana wallet: ${solanaWallet.address}; XMR wallet: ${xmrWallet.address}`);
+
     await this.processCurrentTransaction();
   }
 
@@ -330,6 +335,7 @@ export class BTCBridgeExecutor
     // Wait for XMR to arrive
     const maxWaitTime = 2 * 1000 * 60 * 60; // 2 hours
     const startTime = Date.now();
+    this.log(`Waiting for XMR to arrive at ${this.currentTransaction.intermediateWallet.xmrAddress}`);
     while (true) {
       const xmrBalance = await getXmrBalance(
         this.currentTransaction.intermediateWallet.xmrAddress
@@ -352,13 +358,26 @@ export class BTCBridgeExecutor
     if (!this.currentTransaction) return;
 
     // Convert XMR to target token on Solana
+    this.log(`Converting XMR to ${this.strategy.targetToken} on Solana`);
+    // let's get the actual balance of XMR to send, minus fees
+    const xmrBalance = await getXmrBalance(
+      this.currentTransaction.intermediateWallet.xmrAddress
+    );
+    const xmrFee = await estimateXmrFee(
+      this.currentTransaction.intermediateWallet.filename,
+      this.currentTransaction.intermediateWallet.password,
+      this.currentTransaction.destinationWallet.solanaAddress,
+      xmrBalance.balance
+    );
+    const xmrToSend = xmrBalance.balance - 1.01 *xmrFee.estimatedFeeXMR;
+    this.log(`Sending ${xmrToSend} XMR to ChangeNow`);
     const targetToken = this.strategy.targetToken;
     const xmrToSol = await this.initiateChangeNowSwap(
       'xmr',
       targetToken === 'wbtc' ? 'btc' : targetToken,
       'xmr',
       'solana',
-      this.currentTransaction.xmrAmount,
+      xmrToSend.toString(),
       this.currentTransaction.destinationWallet.solanaAddress
     );
 
@@ -665,7 +684,6 @@ replaceable=true`;
   }
 
   public async getDisplayInfo(): Promise<string[]> {
-    const wallet = Web3Helper.getWallet(this.getWalletPrivateKey());
     const completedSwaps = this.transactions.filter(
       (t) => t.status === 'completed'
     ).length;

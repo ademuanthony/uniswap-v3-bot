@@ -107,6 +107,63 @@ export async function openWallet(filename: string, password: string) {
   };
 }
 
+export async function estimateXmrFee(
+  walletFilename: string,
+  password: string,
+  destinationAddress: string,
+  amountXMR: number
+): Promise<{
+  estimatedFeeXMR: number;
+}> {
+  try {
+    // First open the wallet
+    await axios.post(
+      RPC_URL,
+      {
+        jsonrpc: '2.0',
+        id: '0',
+        method: 'open_wallet',
+        params: { filename: walletFilename, password },
+      },
+      { auth: RPC_AUTH }
+    );
+
+    // Then prepare a transfer with `do_not_relay: true`
+    const response = await axios.post(
+      RPC_URL,
+      {
+        jsonrpc: '2.0',
+        id: '0',
+        method: 'transfer',
+        params: {
+          destinations: [
+            {
+              amount: Math.floor(amountXMR * 1e12), // Convert XMR to atomic units (piconero)
+              address: destinationAddress,
+            },
+          ],
+          priority: 2, // Normal priority (default is 2)
+          ring_size: 16,
+          do_not_relay: true, // <--- KEY to only estimate, not send
+        },
+      },
+      { auth: RPC_AUTH }
+    );
+
+    const result = response.data.result;
+    const estimatedFee = result.fee / 1e12; // Fee is returned in atomic units
+
+    console.log(`Estimated Fee: ${estimatedFee} XMR`);
+
+    return {
+      estimatedFeeXMR: estimatedFee,
+    };
+  } catch (error: any) {
+    console.error('Fee estimation failed:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
 export async function transferXMR(
   walletFilename: string,
   password: string,
