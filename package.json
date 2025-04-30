@@ -2,7 +2,6 @@
   "name": "uniswap-v3-dca-bot",
   "version": "1.0.0",
   "main": "src/bot.ts",
-  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "ts-node src/bot.ts",
@@ -48,6 +47,7 @@
     "graphql-request": "^4.3.0",
     "http-digest-client": "^0.0.3",
     "jsbi": "^4.3.0",
+    "monero-javascript": "^0.8.4",
     "openai": "^4.85.4",
     "snarkjs": "^0.7.5",
     "tiny-secp256k1": "^2.2.3",
