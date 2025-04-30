@@ -1,4 +1,3 @@
-import DigestFetch from 'digest-fetch';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -9,8 +8,6 @@ const RPC_AUTH = {
   password: process.env.MONERO_RPC_PASSWORD!,
 };
 
-const client = new DigestFetch(RPC_AUTH.username, RPC_AUTH.password);
-
 interface CreateWalletParams {
   filename: string;
   language: string; // mnemonic seed language (e.g., "English")
@@ -18,6 +15,9 @@ interface CreateWalletParams {
 }
 
 async function rpcCall(method: string, params: object = {}) {
+  const DigestFetch = (await import('digest-fetch')).default;
+  const client = new DigestFetch(RPC_AUTH.username, RPC_AUTH.password);
+
   console.log(`RPC call: ${method} ${JSON.stringify({ RPC_AUTH, RPC_URL })}`);
   const response = await client.fetch(RPC_URL, {
     method: 'POST',
