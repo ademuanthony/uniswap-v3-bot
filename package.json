@@ -2,6 +2,9 @@
   "name": "uniswap-v3-dca-bot",
   "version": "1.0.0",
   "main": "src/bot.ts",
+  "compilerOptions": {
+    "typeRoots": ["./src/types", "./node_modules/@types"]
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "ts-node src/bot.ts",
