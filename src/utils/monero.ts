@@ -1,5 +1,4 @@
-// createXmrWallet.ts
-import axios from 'axios';
+import DigestFetch from 'digest-fetch';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,39 +9,41 @@ const RPC_AUTH = {
   password: process.env.MONERO_RPC_PASSWORD!,
 };
 
+const client = new DigestFetch(RPC_AUTH.username, RPC_AUTH.password);
+
 interface CreateWalletParams {
   filename: string;
   language: string; // mnemonic seed language (e.g., "English")
   password: string;
 }
 
+async function rpcCall(method: string, params: object = {}) {
+  console.log(`RPC call: ${method} ${JSON.stringify({ RPC_AUTH, RPC_URL })}`);
+  const response = await client.fetch(RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: '0',
+      method,
+      params,
+    }),
+  });
+
+  const json = await response.json();
+
+  if (json.error) throw new Error(json.error.message);
+  return json.result;
+}
+
 export async function createMoneroWallet(params: CreateWalletParams) {
   try {
     const { filename, language, password } = params;
 
-    const response = await axios.post(
-      RPC_URL,
-      {
-        jsonrpc: '2.0',
-        id: '0',
-        method: 'create_wallet',
-        params: {
-          filename,
-          language,
-          password,
-        },
-      },
-      { auth: RPC_AUTH }
-    );
-
-    if (response.data.error) {
-      throw new Error(response.data.error.message);
-    }
-
+    await rpcCall('create_wallet', { filename, language, password });
     console.log('Wallet created successfully!');
     console.log('Wallet filename:', filename);
 
-    // Now open the newly created wallet to get its details
     const walletInfo = await openWallet(filename, password);
     console.log('Address:', walletInfo.address);
     console.log('Seed (mnemonic):', walletInfo.seed);
@@ -53,57 +54,16 @@ export async function createMoneroWallet(params: CreateWalletParams) {
 }
 
 export async function openWallet(filename: string, password: string) {
-  // Open wallet
-  await axios.post(
-    RPC_URL,
-    {
-      jsonrpc: '2.0',
-      id: '0',
-      method: 'open_wallet',
-      params: { filename, password },
-    },
-    { auth: RPC_AUTH }
-  );
+  await rpcCall('open_wallet', { filename, password });
 
-  // Get address
-  const addressResp = await axios.post(
-    RPC_URL,
-    {
-      jsonrpc: '2.0',
-      id: '0',
-      method: 'get_address',
-    },
-    { auth: RPC_AUTH }
-  );
-
-  // Get mnemonic seed
-  const seedResp = await axios.post(
-    RPC_URL,
-    {
-      jsonrpc: '2.0',
-      id: '0',
-      method: 'query_key',
-      params: { key_type: 'mnemonic' },
-    },
-    { auth: RPC_AUTH }
-  );
-
-  // Get view key
-  const viewKeyResp = await axios.post(
-    RPC_URL,
-    {
-      jsonrpc: '2.0',
-      id: '0',
-      method: 'query_key',
-      params: { key_type: 'view_key' },
-    },
-    { auth: RPC_AUTH }
-  );
+  const addressResp = await rpcCall('get_address');
+  const seedResp = await rpcCall('query_key', { key_type: 'mnemonic' });
+  const viewKeyResp = await rpcCall('query_key', { key_type: 'view_key' });
 
   return {
-    address: addressResp.data.result.address,
-    seed: seedResp.data.result.key,
-    viewKey: viewKeyResp.data.result.key,
+    address: addressResp.address,
+    seed: seedResp.key,
+    viewKey: viewKeyResp.key,
   };
 }
 
@@ -116,50 +76,25 @@ export async function estimateXmrFee(
   estimatedFeeXMR: number;
 }> {
   try {
-    // First open the wallet
-    await axios.post(
-      RPC_URL,
-      {
-        jsonrpc: '2.0',
-        id: '0',
-        method: 'open_wallet',
-        params: { filename: walletFilename, password },
-      },
-      { auth: RPC_AUTH }
-    );
+    await rpcCall('open_wallet', { filename: walletFilename, password });
 
-    // Then prepare a transfer with `do_not_relay: true`
-    const response = await axios.post(
-      RPC_URL,
-      {
-        jsonrpc: '2.0',
-        id: '0',
-        method: 'transfer',
-        params: {
-          destinations: [
-            {
-              amount: Math.floor(amountXMR * 1e12), // Convert XMR to atomic units (piconero)
-              address: destinationAddress,
-            },
-          ],
-          priority: 2, // Normal priority (default is 2)
-          ring_size: 16,
-          do_not_relay: true, // <--- KEY to only estimate, not send
+    const result = await rpcCall('transfer', {
+      destinations: [
+        {
+          amount: Math.floor(amountXMR * 1e12),
+          address: destinationAddress,
         },
-      },
-      { auth: RPC_AUTH }
-    );
+      ],
+      priority: 2,
+      ring_size: 16,
+      do_not_relay: true,
+    });
 
-    const result = response.data.result;
-    const estimatedFee = result.fee / 1e12; // Fee is returned in atomic units
-
+    const estimatedFee = result.fee / 1e12;
     console.log(`Estimated Fee: ${estimatedFee} XMR`);
-
-    return {
-      estimatedFeeXMR: estimatedFee,
-    };
+    return { estimatedFeeXMR: estimatedFee };
   } catch (error: any) {
-    console.error('Fee estimation failed:', error.response?.data || error.message);
+    console.error('Fee estimation failed:', error.message);
     throw error;
   }
 }
@@ -171,40 +106,19 @@ export async function transferXMR(
   amountXMR: number
 ) {
   try {
-    // First open the wallet
-    await axios.post(
-      RPC_URL,
-      {
-        jsonrpc: '2.0',
-        id: '0',
-        method: 'open_wallet',
-        params: { filename: walletFilename, password },
-      },
-      { auth: RPC_AUTH }
-    );
+    await rpcCall('open_wallet', { filename: walletFilename, password });
 
-    // Then perform the transfer
-    const response = await axios.post(
-      RPC_URL,
-      {
-        jsonrpc: '2.0',
-        id: '0',
-        method: 'transfer',
-        params: {
-          destinations: [
-            {
-              amount: Math.floor(amountXMR * 1e12), // Convert XMR to atomic units (piconero)
-              address: destinationAddress,
-            },
-          ],
-          priority: 2, // Normal priority
-          ring_size: 16,
+    const result = await rpcCall('transfer', {
+      destinations: [
+        {
+          amount: Math.floor(amountXMR * 1e12),
+          address: destinationAddress,
         },
-      },
-      { auth: RPC_AUTH }
-    );
+      ],
+      priority: 2,
+      ring_size: 16,
+    });
 
-    const result = response.data.result;
     console.log('Transfer successful!');
     console.log('Transaction ID (txid):', result.tx_hash);
     console.log('Fee (XMR):', result.fee / 1e12);
@@ -214,7 +128,7 @@ export async function transferXMR(
       fee: result.fee / 1e12,
     };
   } catch (error: any) {
-    console.error('Transfer failed:', error.response?.data || error.message);
+    console.error('Transfer failed:', error.message);
     throw error;
   }
 }
@@ -224,28 +138,13 @@ export async function getXmrBalance(address: string): Promise<{
   unlockedBalance: number;
 }> {
   try {
-    const response = await axios.post(
-      RPC_URL,
-      {
-        jsonrpc: '2.0',
-        id: '0',
-        method: 'get_balance',
-        params: { address },
-      },
-      { auth: RPC_AUTH }
-    );
-
-    const result = response.data.result;
-
-    const balance = result.balance / 1e12;       // Available balance
-    const unlockedBalance = result.unlocked_balance / 1e12; // Spendable balance (unlocked)
-    
+    const result = await rpcCall('get_balance', { address });
     return {
-      balance,
-      unlockedBalance,
+      balance: result.balance / 1e12,
+      unlockedBalance: result.unlocked_balance / 1e12,
     };
   } catch (error: any) {
-    console.error('Error fetching balance:', error.response?.data || error.message);
+    console.error('Error fetching balance:', error.message);
     throw error;
   }
 }
