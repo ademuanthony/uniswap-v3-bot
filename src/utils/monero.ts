@@ -1,3 +1,5 @@
+import DigestClient from 'http-digest-client';
+
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -7,6 +9,7 @@ const RPC_AUTH = {
   username: process.env.MONERO_RPC_USERNAME!,
   password: process.env.MONERO_RPC_PASSWORD!,
 };
+const digest = new DigestClient(RPC_AUTH.username, RPC_AUTH.password);
 
 interface CreateWalletParams {
   filename: string;
@@ -14,25 +17,40 @@ interface CreateWalletParams {
   password: string;
 }
 
-async function rpcCall(method: string, params: object = {}) {
-  console.log(`RPC call: ${method} ${JSON.stringify({ RPC_AUTH, RPC_URL })}`);
-  const DigestFetch = (await import('digest-fetch')).default;
-  const client = new DigestFetch(RPC_AUTH.username, RPC_AUTH.password);
-  const response = await client.fetch(RPC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: '0',
-      method,
-      params,
-    }),
+export async function rpcCall(method: string, params: object = {}) {
+  const payload = {
+    jsonrpc: '2.0',
+    id: '0',
+    method,
+    params,
+  };
+
+  return new Promise<any>((resolve, reject) => {
+    digest.request({
+      host: RPC_URL,
+      path: '/json_rpc',
+      port: 18083,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    }, JSON.stringify(payload), (res) => {
+      let data = '';
+      res.on('data', chunk => (data += chunk));
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.error) {
+            reject(new Error(json.error.message));
+          } else {
+            resolve(json.result);
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
   });
-
-  const json = await response.json();
-
-  if (json.error) throw new Error(json.error.message);
-  return json.result;
 }
 
 export async function createMoneroWallet(params: CreateWalletParams) {
