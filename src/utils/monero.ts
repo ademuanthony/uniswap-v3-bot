@@ -1,8 +1,9 @@
-import {
-  MoneroWalletRpc,
-  connectToWalletRpc,
-} from 'monero-ts';
+  // import {
+  //   MoneroWalletRpc,
+  //   connectToWalletRpc,
+  // } from 'monero-ts';
 import dotenv from 'dotenv';
+import MoneroWalletRpc from '../monero/wallet/MoneroWalletRpc';
 
 dotenv.config();
 
@@ -14,7 +15,7 @@ let walletClient: MoneroWalletRpc | null = null;
 
 export async function connectWallet() {
   if (!walletClient) {
-    walletClient = await connectToWalletRpc(RPC_URL, RPC_USERNAME, RPC_PASSWORD);
+    walletClient = await MoneroWalletRpc.connectToWalletRpc(RPC_URL, RPC_USERNAME, RPC_PASSWORD);
   }
   return walletClient;
 }
