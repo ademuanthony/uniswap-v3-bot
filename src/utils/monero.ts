@@ -1,15 +1,24 @@
-import DigestClient from 'http-digest-client';
-
+import {
+  MoneroWalletRpc,
+  connectToWalletRpc,
+} from 'monero-ts';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const RPC_URL = process.env.MONERO_RPC_URL!;
-const RPC_AUTH = {
-  username: process.env.MONERO_RPC_USERNAME!,
-  password: process.env.MONERO_RPC_PASSWORD!,
-};
-const digest = new DigestClient(RPC_AUTH.username, RPC_AUTH.password);
+const RPC_URL = process.env.MONERO_RPC_URL || 'http://127.0.0.1:18083';
+const RPC_USERNAME = process.env.MONERO_RPC_USERNAME || 'walletuser';
+const RPC_PASSWORD = process.env.MONERO_RPC_PASSWORD || 'walletpass';
+
+let walletClient: MoneroWalletRpc | null = null;
+
+export async function connectWallet() {
+  if (!walletClient) {
+    walletClient = await connectToWalletRpc(RPC_URL, RPC_USERNAME, RPC_PASSWORD);
+  }
+  return walletClient;
+}
+
 
 interface CreateWalletParams {
   filename: string;
@@ -17,70 +26,41 @@ interface CreateWalletParams {
   password: string;
 }
 
-export async function rpcCall(method: string, params: object = {}) {
-  const payload = {
-    jsonrpc: '2.0',
-    id: '0',
-    method,
-    params,
-  };
-
-  return new Promise<any>((resolve, reject) => {
-    digest.request({
-      host: RPC_URL,
-      path: '/json_rpc',
-      port: 18083,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    }, JSON.stringify(payload), (res) => {
-      let data = '';
-      res.on('data', chunk => (data += chunk));
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.error) {
-            reject(new Error(json.error.message));
-          } else {
-            resolve(json.result);
-          }
-        } catch (err) {
-          reject(err);
-        }
-      });
-    });
-  });
-}
-
 export async function createMoneroWallet(params: CreateWalletParams) {
-  try {
-    const { filename, language, password } = params;
-
-    await rpcCall('create_wallet', { filename, language, password });
-    console.log('Wallet created successfully!');
-    console.log('Wallet filename:', filename);
-
-    const walletInfo = await openWallet(filename, password);
-    console.log('Address:', walletInfo.address);
-    console.log('Seed (mnemonic):', walletInfo.seed);
-    console.log('View key:', walletInfo.viewKey);
-  } catch (err: any) {
-    console.error('Wallet creation error:', err.message);
-  }
+  const client = await connectWallet();
+  const wallet = await client.createWallet({
+    path: params.filename,
+    password: params.password,
+    language: params.language,
+  });
+  console.log(`✅ Wallet created: ${params.filename}`);
+  return wallet;
 }
 
 export async function openWallet(filename: string, password: string) {
-  await rpcCall('open_wallet', { filename, password });
+  const client = await connectWallet();
+  const wallet = await client.openWallet(filename, password);
+  console.log(`✅ Wallet opened: ${filename}`);
 
-  const addressResp = await rpcCall('get_address');
-  const seedResp = await rpcCall('query_key', { key_type: 'mnemonic' });
-  const viewKeyResp = await rpcCall('query_key', { key_type: 'view_key' });
+  const addressResp = await wallet.getPrimaryAddress();
+  const seedResp = await wallet.getSeed();
+  const viewKeyResp = await wallet.getPrivateViewKey();
 
   return {
-    address: addressResp.address,
-    seed: seedResp.key,
-    viewKey: viewKeyResp.key,
+    address: addressResp,
+    seed: seedResp,
+    viewKey: viewKeyResp,
+  };
+}
+
+export async function getXmrBalance(filename: string, password: string): Promise<{ balance: bigint; unlockedBalance: bigint }> {
+  const client = await connectWallet();
+  const wallet = await client.openWallet(filename, password);
+  const balance = await wallet.getBalance();
+  const unlockedBalance = await wallet.getUnlockedBalance();
+  return {
+    balance,
+    unlockedBalance,
   };
 }
 
@@ -88,27 +68,19 @@ export async function estimateXmrFee(
   walletFilename: string,
   password: string,
   destinationAddress: string,
-  amountXMR: number
+  amountXMR: bigint
 ): Promise<{
-  estimatedFeeXMR: number;
+  estimatedFeeXMR: bigint;
 }> {
   try {
-    await rpcCall('open_wallet', { filename: walletFilename, password });
-
-    const result = await rpcCall('transfer', {
-      destinations: [
-        {
-          amount: Math.floor(amountXMR * 1e12),
-          address: destinationAddress,
-        },
-      ],
-      priority: 2,
-      ring_size: 16,
-      do_not_relay: true,
+    const client = await connectWallet();
+    const wallet = await client.openWallet(walletFilename, password);
+    const tx = await wallet.createTx({
+      accountIndex: 0,
+      address: destinationAddress,
+      amount: amountXMR,
     });
-
-    const estimatedFee = result.fee / 1e12;
-    console.log(`Estimated Fee: ${estimatedFee} XMR`);
+    const estimatedFee = tx.getFee();
     return { estimatedFeeXMR: estimatedFee };
   } catch (error: any) {
     console.error('Fee estimation failed:', error.message);
@@ -120,48 +92,23 @@ export async function transferXMR(
   walletFilename: string,
   password: string,
   destinationAddress: string,
-  amountXMR: number
+  amountXMR: bigint
 ) {
   try {
-    await rpcCall('open_wallet', { filename: walletFilename, password });
-
-    const result = await rpcCall('transfer', {
-      destinations: [
-        {
-          amount: Math.floor(amountXMR * 1e12),
-          address: destinationAddress,
-        },
-      ],
-      priority: 2,
-      ring_size: 16,
+    const client = await connectWallet();
+    const wallet = await client.openWallet(walletFilename, password);
+    const tx = await wallet.createTx({
+      accountIndex: 0,
+      address: destinationAddress,
+      amount: amountXMR,
     });
-
-    console.log('Transfer successful!');
-    console.log('Transaction ID (txid):', result.tx_hash);
-    console.log('Fee (XMR):', result.fee / 1e12);
-
+    const result = await wallet.relayTx(tx);
     return {
-      txid: result.tx_hash,
-      fee: result.fee / 1e12,
+      txid: result,
+      fee: tx.getFee(),
     };
   } catch (error: any) {
     console.error('Transfer failed:', error.message);
-    throw error;
-  }
-}
-
-export async function getXmrBalance(address: string): Promise<{
-  balance: number;
-  unlockedBalance: number;
-}> {
-  try {
-    const result = await rpcCall('get_balance', { address });
-    return {
-      balance: result.balance / 1e12,
-      unlockedBalance: result.unlocked_balance / 1e12,
-    };
-  } catch (error: any) {
-    console.error('Error fetching balance:', error.message);
     throw error;
   }
 }

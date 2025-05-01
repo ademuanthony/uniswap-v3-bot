@@ -338,7 +338,8 @@ export class BTCBridgeExecutor
     this.log(`Waiting for XMR to arrive at ${this.currentTransaction.intermediateWallet.xmrAddress}`);
     while (true) {
       const xmrBalance = await getXmrBalance(
-        this.currentTransaction.intermediateWallet.xmrAddress
+        this.currentTransaction.intermediateWallet.filename,
+        this.currentTransaction.intermediateWallet.password
       );
       if (xmrBalance.balance > 0) {
         this.currentTransaction.status = 'xmr_received';
@@ -361,7 +362,8 @@ export class BTCBridgeExecutor
     this.log(`Converting XMR to ${this.strategy.targetToken} on Solana`);
     // let's get the actual balance of XMR to send, minus fees
     const xmrBalance = await getXmrBalance(
-      this.currentTransaction.intermediateWallet.xmrAddress
+      this.currentTransaction.intermediateWallet.filename,
+      this.currentTransaction.intermediateWallet.password
     );
     const xmrFee = await estimateXmrFee(
       this.currentTransaction.intermediateWallet.filename,
@@ -369,7 +371,7 @@ export class BTCBridgeExecutor
       this.currentTransaction.destinationWallet.solanaAddress,
       xmrBalance.balance
     );
-    const xmrToSend = xmrBalance.balance - 1.01 *xmrFee.estimatedFeeXMR;
+    const xmrToSend = xmrBalance.balance - xmrFee.estimatedFeeXMR;
     this.log(`Sending ${xmrToSend} XMR to ChangeNow`);
     const targetToken = this.strategy.targetToken;
     const xmrToSol = await this.initiateChangeNowSwap(
@@ -377,7 +379,7 @@ export class BTCBridgeExecutor
       targetToken === 'wbtc' ? 'btc' : targetToken,
       'xmr',
       'solana',
-      xmrToSend.toString(),
+      (Number(xmrToSend)/1e12).toString(),
       this.currentTransaction.destinationWallet.solanaAddress
     );
 
@@ -388,7 +390,7 @@ export class BTCBridgeExecutor
       this.currentTransaction.intermediateWallet.filename,
       this.currentTransaction.intermediateWallet.password,
       xmrToSol.payinAddress,
-      Number(this.currentTransaction.xmrAmount)
+      xmrToSend
     );
 
     this.currentTransaction.status = 'xmr_sent';
@@ -444,7 +446,7 @@ export class BTCBridgeExecutor
       password,
     });
 
-    const walletInfo = await openWallet(filename, '');
+    const walletInfo = await openWallet(filename, password);
     return {
       address: walletInfo.address,
       filename,
