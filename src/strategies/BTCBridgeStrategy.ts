@@ -79,6 +79,7 @@ type SwapTransaction = {
     | 'finalizing'
     | 'completed'
     | 'failed';
+  failed?: boolean;
   btcAmount: string;
   xmrAmount: string;
   solUsdcAmount: string;
@@ -286,7 +287,7 @@ export class BTCBridgeExecutor
           break;
       }
     } catch (error) {
-      this.currentTransaction.status = 'failed';
+      this.currentTransaction.failed = true;
       this.transactions.push(this.currentTransaction);
       await this.saveTransactions();
       throw error;
@@ -296,6 +297,7 @@ export class BTCBridgeExecutor
   private async processPendingTransaction(): Promise<void> {
     if (!this.currentTransaction) return;
 
+    this.log('Initiate BTC -> XMR swap')
     // Initiate BTC -> XMR swap
     const btcToXmr = await this.initiateChangeNowSwap(
       'btc',
@@ -308,6 +310,8 @@ export class BTCBridgeExecutor
     this.currentTransaction.xmrAmount = btcToXmr.expectedAmount;
     this.currentTransaction.status = 'btc_sent';
     await this.saveTransaction(this.currentTransaction);
+
+    this.log(`Sending ${this.currentTransaction.btcAmount} BTC to ${btcToXmr.payinAddress}`);
 
     const btcTxHash = await this.sendBtc(
       btcToXmr.payinAddress,
@@ -481,29 +485,34 @@ export class BTCBridgeExecutor
     payinAddress: string;
     expectedAmount: string;
   }> {
-    const response = await axios.post(
-      'https://api.changenow.io/v2/exchange',
-      {
-        fromCurrency,
-        toCurrency,
-        fromNetwork,
-        toNetwork,
-        fromAmount,
-        address,
-        flow: 'standard',
-      },
-      {
-        headers: {
-          'x-api-key': process.env.CHANGENOW_API_KEY,
+    try {
+      const response = await axios.post(
+        'https://api.changenow.io/v2/exchange',
+        {
+          fromCurrency,
+          toCurrency,
+          fromNetwork,
+          toNetwork,
+          fromAmount,
+          address,
+          flow: 'standard',
         },
-      }
-    );
-
-    return {
-      id: response.data.id,
-      payinAddress: response.data.payinAddress,
-      expectedAmount: response.data.expectedAmountTo,
-    };
+        {
+          headers: {
+            'x-api-key': process.env.CHANGENOW_API_KEY,
+          },
+        }
+      );
+  
+      return {
+        id: response.data.id,
+        payinAddress: response.data.payinAddress,
+        expectedAmount: response.data.expectedAmountTo,
+      };
+    } catch(err: any) {
+      this.log(`Error initiating ChangeNow swap: ${err?.response?.data}`);
+      throw err;
+    }
   }
 
   private async sendBtc(
