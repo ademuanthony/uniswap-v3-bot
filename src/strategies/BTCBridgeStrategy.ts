@@ -386,7 +386,7 @@ export class BTCBridgeExecutor
       'xmr',
       targetToken === 'wbtc' ? 'btc' : targetToken,
       'xmr',
-      'solana',
+      'sol',
       (Number(xmrToSend)/1e12).toString(),
       this.currentTransaction.destinationWallet.solanaAddress
     );
