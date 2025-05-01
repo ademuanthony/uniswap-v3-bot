@@ -377,6 +377,8 @@ export class BTCBridgeExecutor
       dummyDest,
       xmrBalance.balance/2n
     );
+    this.log(`XMR fee: ${Number(xmrFee.estimatedFeeXMR)/1e12} XMR`);
+
     const xmrToSend = xmrBalance.balance - xmrFee.estimatedFeeXMR;
     this.log(`Sending ${xmrToSend} XMR to ChangeNow`);
     const targetToken = this.strategy.targetToken;
@@ -514,7 +516,8 @@ export class BTCBridgeExecutor
         expectedAmount: response.data.expectedAmountTo,
       };
     } catch(err: any) {
-      this.log(`Error initiating ChangeNow swap: ${err?.response?.data}`);
+      console.log(JSON.stringify(err?.response?.data, null, 2));
+      this.log(`Error initiating ChangeNow swap`);
       throw err;
     }
   }
