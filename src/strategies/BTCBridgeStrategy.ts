@@ -499,7 +499,7 @@ export class BTCBridgeExecutor
         },
         {
           headers: {
-            'x-api-key': process.env.CHANGENOW_API_KEY,
+            'x-changenow-api-key': process.env.CHANGENOW_API_KEY,
           },
         }
       );
