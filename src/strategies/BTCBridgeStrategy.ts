@@ -374,7 +374,7 @@ export class BTCBridgeExecutor
       this.currentTransaction.intermediateWallet.filename,
       this.currentTransaction.intermediateWallet.password,
       dummyDest,
-      xmrBalance.balance
+      xmrBalance.balance/2n
     );
     const xmrToSend = xmrBalance.balance - xmrFee.estimatedFeeXMR;
     this.log(`Sending ${xmrToSend} XMR to ChangeNow`);
