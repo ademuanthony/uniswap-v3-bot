@@ -369,6 +369,7 @@ export class BTCBridgeExecutor
       this.currentTransaction.intermediateWallet.filename,
       this.currentTransaction.intermediateWallet.password
     );
+    this.log(`XMR balance: ${Number(xmrBalance.balance)/1e12} XMR`);
     const dummyDest = '4AKvQTRf8w21HoPnAgFWc7U4v3tSL782ZXCj5YQ82w466VqwPsuJZfYWmjEqr56h42KMZS4jgXLEe9PKHBdLTA7x6yKvUg8';
     const xmrFee = await estimateXmrFee(
       this.currentTransaction.intermediateWallet.filename,
