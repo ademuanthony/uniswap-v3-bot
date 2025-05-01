@@ -1,9 +1,7 @@
-  // import {
-  //   MoneroWalletRpc,
-  //   connectToWalletRpc,
-  // } from 'monero-ts';
+  import {
+    MoneroWalletRpc,
+  } from 'monero-ts';
 import dotenv from 'dotenv';
-import MoneroWalletRpc from '../monero/wallet/MoneroWalletRpc';
 
 dotenv.config();
 
