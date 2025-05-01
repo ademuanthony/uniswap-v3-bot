@@ -369,10 +369,11 @@ export class BTCBridgeExecutor
       this.currentTransaction.intermediateWallet.filename,
       this.currentTransaction.intermediateWallet.password
     );
+    const dummyDest = '4AKvQTRf8w21HoPnAgFWc7U4v3tSL782ZXCj5YQ82w466VqwPsuJZfYWmjEqr56h42KMZS4jgXLEe9PKHBdLTA7x6yKvUg8';
     const xmrFee = await estimateXmrFee(
       this.currentTransaction.intermediateWallet.filename,
       this.currentTransaction.intermediateWallet.password,
-      this.currentTransaction.destinationWallet.solanaAddress,
+      dummyDest,
       xmrBalance.balance
     );
     const xmrToSend = xmrBalance.balance - xmrFee.estimatedFeeXMR;
@@ -388,6 +389,8 @@ export class BTCBridgeExecutor
     );
 
     this.currentTransaction.solUsdcAmount = xmrToSol.expectedAmount;
+
+    this.log(`Sending ${xmrToSend} XMR to ChangeNow`);
 
     // Send XMR to ChangeNow
     await transferXMR(
@@ -616,6 +619,11 @@ replaceable=true`;
 
     try {
       const backup = JSON.parse(fs.readFileSync(fileName, 'utf8'));
+      if (backupKey.startsWith('swap')) {
+        this.currentTransaction = backup;
+        await this.processCurrentTransaction();
+        return 'Resume command executed';
+      }
 
       if (!backup.receipt || !backup.currentDeposit?.bitcoinRecoveryAddress) {
         return 'Backup file does not contain a valid deposit receipt';
