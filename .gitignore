@@ -10,3 +10,5 @@ ai.txt
 exprompt.txt
 wallet.json
 proxies.rxt
+.example.env
+config.old.json

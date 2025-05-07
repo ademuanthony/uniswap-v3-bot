@@ -21,6 +21,8 @@ A flexible trading bot supporting multiple strategies for Uniswap V3, including 
 - An Ethereum RPC provider (e.g., Infura, Alchemy)
 - Some ETH for gas fees
 - Trading tokens (USDC, WETH, etc.)
+- bitcoin-cli
+- monero-wallet
 
 ## Installation
 

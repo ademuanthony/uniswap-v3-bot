@@ -558,12 +558,6 @@ replaceable=true`;
     await fs.promises.writeFile(filePath, JSON.stringify(transaction, null, 2));
   }
 
-  private async loadTransaction(id: string) {
-    const filePath = path.join(this.storageDir, `${id}.json`);
-    const data = await fs.promises.readFile(filePath, 'utf8');
-    return JSON.parse(data);
-  }
-
   private async saveTransactions() {
     const filePath = path.join(this.storageDir, `${this.strategy.key}.json`);
     await fs.promises.writeFile(
@@ -896,12 +890,10 @@ replaceable=true`;
       return;
     }
 
-    if (args.length === 0) {
-      console.log('Usage: mint <amount>');
-      return;
+    let amount = this.strategy.amount;
+    if (args.length > 0) {
+      amount = args[0];
     }
-
-    const amount = args[0];
 
     if (this.strategy.targetNetwork === 'ethereum') {
       await this.startNewDeposit(amount);
